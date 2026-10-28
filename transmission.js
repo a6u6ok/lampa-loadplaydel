@@ -24,16 +24,6 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    // Запасной список популярных плееров, если Android-мост не отдаёт список
-    var FALLBACK_PLAYERS = [
-        { package: 'org.videolan.vlc', name: 'VLC' },
-        { package: 'com.mxtech.videoplayer.ad', name: 'MX Player' },
-        { package: 'com.mxtech.videoplayer.pro', name: 'MX Player Pro' },
-        { package: 'com.google.android.youtube', name: 'YouTube' },
-        { package: 'ru.kinopoisk', name: 'Кинопоиск' },
-        { package: 'com.lampa.player', name: 'Lampa Player' }
-    ];
-
     // ================= УТИЛИТЫ =================
 
     function notify(text) {
@@ -65,16 +55,6 @@
         } catch (error) {}
 
         return defaultValue;
-    }
-
-    function storeSet(key, value) {
-        try {
-            if (window.Lampa && Lampa.Storage) {
-                Lampa.Storage.set(key, value);
-            }
-        } catch (error) {
-            console.warn('[qBittorrent] storeSet error:', error);
-        }
     }
 
     function isTrue(value, defaultValue) {
@@ -430,317 +410,7 @@
         }
     }
 
-    // ================= СПИСОК ПЛЕЕРОВ =================
-
-    function normalizePlayer(raw) {
-        if (!raw) return null;
-
-        if (typeof raw === 'string') {
-            return { package: raw, name: raw };
-        }
-
-        var pkg =
-            raw.package ||
-            raw.packageName ||
-            raw.id ||
-            raw.pkg ||
-            '';
-
-        var name =
-            raw.name ||
-            raw.label ||
-            raw.title ||
-            raw.appName ||
-            pkg;
-
-        if (!pkg) return null;
-
-        return { package: pkg, name: name };
-    }
-
-    function parsePlayersResponse(response) {
-        if (!response) return null;
-
-        var data = response;
-
-        if (typeof response === 'string') {
-            try {
-                data = JSON.parse(response);
-            } catch (error) {
-                return null;
-            }
-        }
-
-        if (Array.isArray(data)) {
-            return data.map(normalizePlayer).filter(Boolean);
-        }
-
-        if (data && Array.isArray(data.players)) {
-            return data.players.map(normalizePlayer).filter(Boolean);
-        }
-
-        if (data && Array.isArray(data.list)) {
-            return data.list.map(normalizePlayer).filter(Boolean);
-        }
-
-        return null;
-    }
-
-    function getInstalledPlayers(callback) {
-        var called = false;
-
-        function done(players) {
-            if (called) return;
-            called = true;
-
-            if (players && players.length) {
-                callback(players);
-            } else {
-                callback(FALLBACK_PLAYERS.slice());
-            }
-        }
-
-        // Пробуем нативный Android-мост
-        try {
-            if (window.AndroidJS && typeof AndroidJS.getPlayers === 'function') {
-                var result = AndroidJS.getPlayers();
-
-                var parsed = parsePlayersResponse(result);
-
-                if (parsed && parsed.length) {
-                    done(parsed);
-                    return;
-                }
-
-                // Некоторые сборки возвращают ответ асинхронно через getResp
-                if (typeof AndroidJS.getResp === 'function') {
-                    var tries = 0;
-
-                    (function poll() {
-                        tries++;
-
-                        var resp = null;
-
-                        try {
-                            resp = AndroidJS.getResp();
-                        } catch (error) {}
-
-                        var list = parsePlayersResponse(resp);
-
-                        if (list && list.length) {
-                            done(list);
-                            return;
-                        }
-
-                        if (tries > 10) {
-                            done(null);
-                            return;
-                        }
-
-                        setTimeout(poll, 150);
-                    })();
-
-                    return;
-                }
-            }
-        } catch (error) {
-            console.warn('[qBittorrent] AndroidJS.getPlayers error:', error);
-        }
-
-        // Lampa.Android.getPlayers
-        try {
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.getPlayers === 'function'
-            ) {
-                var res2 = Lampa.Android.getPlayers();
-
-                var parsed2 = parsePlayersResponse(res2);
-
-                if (parsed2 && parsed2.length) {
-                    done(parsed2);
-                    return;
-                }
-            }
-        } catch (error) {
-            console.warn('[qBittorrent] Lampa.Android.getPlayers error:', error);
-        }
-
-        // Старый Android.getPlayers
-        try {
-            if (window.Android && typeof Android.getPlayers === 'function') {
-                var res3 = Android.getPlayers();
-
-                var parsed3 = parsePlayersResponse(res3);
-
-                if (parsed3 && parsed3.length) {
-                    done(parsed3);
-                    return;
-                }
-            }
-        } catch (error) {
-            console.warn('[qBittorrent] Android.getPlayers error:', error);
-        }
-
-        done(null);
-    }
-
     // ================= ВИДЕОПЛЕЕР =================
-
-    function openInPackage(mediaUrl, title, packageName, playerAsk) {
-        var playerData = {
-            url: mediaUrl,
-            title: title || '',
-            card: {
-                title: title || ''
-            }
-        };
-
-        try {
-            // 1) Прямой вызов Android-моста Lampa с пакетом
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.openPlayer === 'function'
-            ) {
-                try {
-                    AndroidJS.openPlayer(
-                        mediaUrl,
-                        JSON.stringify(playerData),
-                        packageName || ''
-                    );
-                } catch (error) {
-                    // Fallback: без третьего аргумента
-                    AndroidJS.openPlayer(mediaUrl, JSON.stringify(playerData));
-                }
-
-                notify(
-                    packageName && !playerAsk
-                        ? 'Открываю в выбранном плеере'
-                        : 'Выбери видеоплеер'
-                );
-
-                return true;
-            }
-
-            // 2) Lampa.Android.openPlayer
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.openPlayer === 'function'
-            ) {
-                try {
-                    Lampa.Android.openPlayer(mediaUrl, playerData, packageName);
-                } catch (error) {
-                    Lampa.Android.openPlayer(mediaUrl, playerData);
-                }
-
-                notify(
-                    packageName && !playerAsk
-                        ? 'Открываю в выбранном плеере'
-                        : 'Выбери видеоплеер'
-                );
-
-                return true;
-            }
-
-            // 3) Старый интерфейс
-            if (
-                window.Android &&
-                typeof Android.openPlayer === 'function'
-            ) {
-                try {
-                    Android.openPlayer(mediaUrl, playerData, packageName);
-                } catch (error) {
-                    Android.openPlayer(mediaUrl, playerData);
-                }
-
-                notify(
-                    packageName && !playerAsk
-                        ? 'Открываю в выбранном плеере'
-                        : 'Выбери видеоплеер'
-                );
-
-                return true;
-            }
-        } catch (error) {
-            console.error('[qBittorrent] player open error:', error);
-        }
-
-        return false;
-    }
-
-    function showPlayerPicker(players, mediaUrl, title) {
-        if (!players || !players.length) {
-            notify('Список плееров пуст');
-            return;
-        }
-
-        // Предпочитаем нативный UI Lampa
-        if (
-            window.Lampa &&
-            Lampa.Select &&
-            typeof Lampa.Select.show === 'function'
-        ) {
-            var items = players.map(function (p) {
-                return {
-                    title: p.name,
-                    package: p.package
-                };
-            });
-
-            // Пункт «Запомнить выбор»
-            items.push({
-                title: '💾 Запомнить выбранный плеер',
-                remember: true
-            });
-
-            Lampa.Select.show({
-                title: 'Выберите плеер',
-                items: items,
-                onSelect: function (item) {
-                    if (item.remember) {
-                        // Возвращаемся к выбору без запоминания
-                        showPlayerPicker(players, mediaUrl, title);
-                        return;
-                    }
-
-                    if (item.package) {
-                        openInPackage(mediaUrl, title, item.package, false);
-                    }
-
-                    Lampa.Controller.toggle('content');
-                },
-                onBack: function () {
-                    Lampa.Controller.toggle('content');
-                }
-            });
-
-            return;
-        }
-
-        // Fallback: простой список через prompt
-        var names = players.map(function (p, i) {
-            return (i + 1) + ') ' + p.name + ' — ' + p.package;
-        }).join('\n');
-
-        var answer = window.prompt(
-            'Выберите плеер (введите номер):\n\n' + names,
-            '1'
-        );
-
-        if (!answer) return;
-
-        var index = parseInt(answer, 10) - 1;
-        var chosen = players[index];
-
-        if (!chosen) {
-            notify('Плеер не выбран');
-            return;
-        }
-
-        openInPackage(mediaUrl, title, chosen.package, false);
-    }
 
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
@@ -768,37 +438,71 @@
 
         var config = cfg();
 
+        var playerData = {
+            url: mediaUrl,
+            title: title || '',
+            card: {
+                title: title || ''
+            }
+        };
+
         debugNotify('Открываю ссылку в плеере: ' + mediaUrl);
 
-        // Если всегда спрашивать — показываем picker
-        if (config.player_ask) {
-            getInstalledPlayers(function (players) {
-                showPlayerPicker(players, mediaUrl, title);
-            });
+        try {
+            // Основной способ для современных сборок Lampa
+            if (
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function'
+            ) {
+                Lampa.Android.openPlayer(mediaUrl, playerData);
 
-            return;
-        }
+                notify(
+                    config.player_package && !config.player_ask
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
 
-        // Если задан пакет — открываем сразу
-        if (config.player_package) {
-            var opened = openInPackage(
-                mediaUrl,
-                title,
-                config.player_package,
-                false
-            );
-
-            if (!opened) {
-                notify('Android-мост плеера недоступен в этой сборке Lampa');
+                return;
             }
 
-            return;
-        }
+            // Прямой вызов Android-моста Lampa
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(mediaUrl, JSON.stringify(playerData));
 
-        // Пакет не задан, спрашивать выключено — показываем picker
-        getInstalledPlayers(function (players) {
-            showPlayerPicker(players, mediaUrl, title);
-        });
+                notify(
+                    config.player_package && !config.player_ask
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
+
+                return;
+            }
+
+            // Старый интерфейс Lampa
+            if (
+                window.Android &&
+                typeof Android.openPlayer === 'function'
+            ) {
+                Android.openPlayer(mediaUrl, playerData);
+
+                notify(
+                    config.player_package && !config.player_ask
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
+
+                return;
+            }
+
+            notify('Android-мост плеера недоступен в этой сборке Lampa');
+        } catch (error) {
+            console.error('[qBittorrent] player open error:', error);
+            notify('Ошибка запуска видеоплеера');
+        }
     }
 
     // ================= НАЖАТИЯ =================
@@ -827,94 +531,6 @@
 
         element.addEventListener('hover:enter', wrapped);
         element.addEventListener('click', wrapped);
-    }
-
-    // ================= ЭКРАН ВЫБОРА ПЛЕЕРА ДЛЯ НАСТРОЕК =================
-
-    function showSettingsPlayerPicker() {
-        getInstalledPlayers(function (players) {
-            if (!players || !players.length) {
-                notify('Установленные плееры не найдены');
-                return;
-            }
-
-            if (
-                window.Lampa &&
-                Lampa.Select &&
-                typeof Lampa.Select.show === 'function'
-            ) {
-                var items = players.map(function (p) {
-                    return {
-                        title: p.name,
-                        package: p.package
-                    };
-                });
-
-                items.push({
-                    title: '❌ Сбросить (спрашивать каждый раз)',
-                    reset: true
-                });
-
-                Lampa.Select.show({
-                    title: 'Плеер по умолчанию',
-                    items: items,
-                    onSelect: function (item) {
-                        if (item.reset) {
-                            storeSet('qbit_player_package', '');
-                            storeSet('qbit_player_ask', true);
-                            notify('Плеер по умолчанию сброшен');
-                        } else if (item.package) {
-                            storeSet('qbit_player_package', item.package);
-                            storeSet('qbit_player_ask', false);
-                            notify(
-                                'Плеер по умолчанию: ' +
-                                item.title
-                            );
-                        }
-
-                        Lampa.Controller.toggle('settings_component');
-                    },
-                    onBack: function () {
-                        Lampa.Controller.toggle('settings_component');
-                    }
-                });
-
-                return;
-            }
-
-            // Fallback
-            var names = players.map(function (p, i) {
-                return (i + 1) + ') ' + p.name + ' — ' + p.package;
-            }).join('\n');
-
-            var answer = window.prompt(
-                'Выберите плеер по умолчанию (0 — сбросить):\n\n' +
-                    names,
-                '1'
-            );
-
-            if (answer === null) return;
-
-            var num = parseInt(answer, 10);
-
-            if (num === 0) {
-                storeSet('qbit_player_package', '');
-                storeSet('qbit_player_ask', true);
-                notify('Плеер по умолчанию сброшен');
-                return;
-            }
-
-            var chosen = players[num - 1];
-
-            if (!chosen) {
-                notify('Плеер не выбран');
-                return;
-            }
-
-            storeSet('qbit_player_package', chosen.package);
-            storeSet('qbit_player_ask', false);
-            notify('Плеер по умолчанию: ' + chosen.name);
-        });
     }
 
     // ================= РЕГИСТРАЦИЯ НАСТРОЕК =================
@@ -1054,8 +670,6 @@
                 }
             });
 
-            // --- Плеер по умолчанию ---
-
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: {
@@ -1065,49 +679,8 @@
                     default: DEF_PLAYER_PACKAGE
                 },
                 field: {
-                    name: 'Плеер по умолчанию (пакет)',
-                    description:
-                        'Пакет плеера. Пусто = системный выбор. ' +
-                        'Можно ввести вручную или выбрать из установленных ' +
-                        'кнопкой «Выбрать из установленных»'
-                }
-            });
-
-            // Кнопка «Выбрать из установленных» — через статический пункт
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: {
-                    name: 'qbit_player_pick',
-                    type: 'static',
-                    default: ''
-                },
-                field: {
-                    name: 'Выбрать плеер из установленных',
-                    description:
-                        'Открывает список установленных на устройстве плееров ' +
-                        'и сохраняет выбор как плеер по умолчанию'
-                },
-                onChange: function () {
-                    showSettingsPlayerPicker();
-                }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: {
-                    name: 'qbit_player_reset',
-                    type: 'static',
-                    default: ''
-                },
-                field: {
-                    name: 'Сбросить плеер по умолчанию',
-                    description:
-                        'Очищает сохранённый пакет и включает «Всегда спрашивать плеер»'
-                },
-                onChange: function () {
-                    storeSet('qbit_player_package', '');
-                    storeSet('qbit_player_ask', true);
-                    notify('Плеер по умолчанию сброшен');
+                    name: 'Плеер по умолчанию',
+                    description: 'Пакет плеера. Пусто = системный выбор плеера'
                 }
             });
 
@@ -1120,9 +693,7 @@
                 },
                 field: {
                     name: 'Всегда спрашивать плеер',
-                    description:
-                        'Открывать выбор установленных плееров при каждом нажатии ' +
-                        'кнопки «Плеер» (игнорирует плеер по умолчанию)'
+                    description: 'Открывать выбор установленных плееров при каждом нажатии'
                 }
             });
 
@@ -1212,4 +783,123 @@
         Lampa.Listener.follow('torrent', function (event) {
             if (!event || event.type !== 'render' || !event.item) return;
 
-            var item = event.item.jquery ? event.item[
+            var item = event.item.jquery ? event.item[0] : event.item;
+            var data = event.element || {};
+
+            if (!item || item.querySelector('.qbit-direct-actions')) return;
+
+            var magnet = data.MagnetUri || data.magnetUri || '';
+            var title = data.Title || data.title || '';
+            var streamUrl = getStreamUrl(data);
+
+            if (DEBUG) {
+                console.log(
+                    '[qBittorrent] torrent card data:',
+                    data
+                );
+            }
+
+            var actions = document.createElement('div');
+            actions.className = 'qbit-direct-actions';
+
+            var addButton = createButton(
+                'qbit-direct-add',
+                '⬇ В qBittorrent',
+                function () {
+                    console.log('[qBittorrent] add press:', magnet);
+                    qbAdd(magnet, title);
+                }
+            );
+
+            var playButton = createButton(
+                'qbit-direct-play',
+                '▶ Плеер',
+                function () {
+                    openInPlayer(streamUrl, title);
+                }
+            );
+
+            var deleteButton = createButton(
+                'qbit-direct-delete',
+                '🗑 Удалить',
+                function () {
+                    qbDelete(magnet);
+                }
+            );
+
+            actions.appendChild(addButton);
+            actions.appendChild(playButton);
+            actions.appendChild(deleteButton);
+
+            item.appendChild(actions);
+        });
+    }
+
+    // ================= ИНИЦИАЛИЗАЦИЯ =================
+
+    function initializePlugin() {
+        try {
+            console.log('[qBittorrent] Инициализация плагина...');
+
+            registerSettings();
+            addMenuItem();
+            initTorrentButton();
+
+            if (!document.getElementById('qbit-direct-style')) {
+                var style = document.createElement('style');
+
+                style.id = 'qbit-direct-style';
+                style.textContent =
+                    '.qbit-direct-actions{' +
+                    'display:inline-flex;align-items:center;' +
+                    'position:relative;z-index:999;' +
+                    '}' +
+
+                    '.qbit-direct-btn{' +
+                    'display:inline-flex;align-items:center;' +
+                    'justify-content:center;margin:8px;' +
+                    'padding:10px 18px;background:#303638;' +
+                    'color:white;border:2px solid #888;' +
+                    'border-radius:6px;font-size:18px;' +
+                    'white-space:nowrap;' +
+                    '}' +
+
+                    '.qbit-direct-btn.focus{' +
+                    'border-color:white;background:#51595c;' +
+                    '}' +
+
+                    '.qbit-direct-play{' +
+                    'background:#1f4b3a;border-color:#3fae7a;' +
+                    '}' +
+
+                    '.qbit-direct-delete{' +
+                    'background:#4b2323;border-color:#ae3f3f;' +
+                    '}' +
+
+                    '.qbit-direct-play.focus{' +
+                    'background:#2c6b51;' +
+                    '}' +
+
+                    '.qbit-direct-delete.focus{' +
+                    'background:#6b2c2c;' +
+                    '}';
+
+                document.head.appendChild(style);
+            }
+
+            console.log('[qBittorrent] Плагин загружен');
+            notify('qBittorrent: плагин загружен');
+        } catch (error) {
+            console.error('[qBittorrent] Ошибка инициализации:', error);
+            notify('Ошибка инициализации qBittorrent');
+        }
+    }
+
+    if (window.Lampa && Lampa.Listener) {
+        initializePlugin();
+    } else {
+        document.addEventListener('appready', function () {
+            initializePlugin();
+        });
+    }
+})();
