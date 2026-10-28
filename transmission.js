@@ -65,14 +65,6 @@
         return defaultValue;
     }
 
-    function storeSet(key, value) {
-        try {
-            if (window.Lampa && Lampa.Storage) {
-                Lampa.Storage.set(key, value);
-            }
-        } catch (error) {}
-    }
-
     function isTrue(value, defaultValue) {
         if (value === true || value === 'true') return true;
         if (value === false || value === 'false') return false;
@@ -111,10 +103,71 @@
         return match ? match[1].toLowerCase() : '';
     }
 
+    // ================= ПЕРЕХВАТ ANDROIDJS.HTTPREQ =================
+    // Оборачиваем оригинальный метод, чтобы узнать его реальную сигнатуру.
+    // Плагин будет вызывать нашу обёртку, которая пытается определить,
+    // как именно Lampa ожидает аргументы.
+
+    var httpReqSignatures = [];
+
+    function setupHttpReqInterceptor() {
+        if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
+            console.warn('[qBittorrent] AndroidJS.httpReq недоступен');
+            return;
+        }
+
+        var originalHttpReq = AndroidJS.httpReq;
+        var interceptorInstalled = false;
+
+        // Не переопределяем, если уже перехвачен
+        if (AndroidJS.__qbit_intercepted) return;
+
+        AndroidJS.httpReq = function () {
+            var args = Array.prototype.slice.call(arguments);
+
+            // Запоминаем сигнатуру (типы аргументов) для анализа
+            var signature = args.map(function (a) {
+                if (typeof a === 'string') {
+                    // Определяем, похоже ли на JSON или URL
+                    if (a.trim().startsWith('{') || a.trim().startsWith('[')) return 'json';
+                    if (a.indexOf('http') === 0) return 'url';
+                    return 'string';
+                }
+                return typeof a;
+            }).join(',');
+
+            if (httpReqSignatures.indexOf(signature) === -1) {
+                httpReqSignatures.push(signature);
+                console.log('[qBittorrent] Обнаружена сигнатура httpReq:', signature);
+            }
+
+            // Вызываем оригинальный метод с теми же аргументами
+            return originalHttpReq.apply(AndroidJS, args);
+        };
+
+        AndroidJS.__qbit_intercepted = true;
+        console.log('[qBittorrent] Перехват AndroidJS.httpReq установлен');
+    }
+
     // ================= HTTP ЗАПРОСЫ =================
 
     function nativeRequest(request, callback) {
-        // Пять известных сигнатур AndroidJS.httpReq в разных сборках Lampa
+        var responded = false;
+
+        function finish(response) {
+            if (responded) return;
+            responded = true;
+
+            if (response === null || response === undefined) {
+                // Пробуем fetch как последний шанс
+                fetchRequest(request, callback);
+                return;
+            }
+
+            callback(response);
+        }
+
+        // Собираем возможные варианты вызова
         var attempts = [
             function () {
                 AndroidJS.httpReq(JSON.stringify(request));
@@ -141,6 +194,9 @@
                 );
             },
             function () {
+                AndroidJS.httpReq(request.url, request.method, request.body || '', request.headers || {});
+            },
+            function () {
                 AndroidJS.httpReq(request);
             }
         ];
@@ -148,23 +204,25 @@
         var currentAttempt = 0;
 
         function tryNext() {
+            if (responded) return;
+
             if (currentAttempt >= attempts.length) {
-                console.warn('[qBittorrent] nativeRequest: all signatures failed, falling back to fetch');
-                fetchRequest(request, callback);
+                console.warn('[qBittorrent] Все сигнатуры httpReq исчерпаны, пробуем fetch');
+                finish(null);
                 return;
             }
 
             var fn = attempts[currentAttempt];
             currentAttempt++;
 
-            // Очищаем буфер ответа перед новым запросом
+            // Очищаем буфер ответа
             try { AndroidJS.getResp(); } catch (e) {}
 
             try {
                 fn();
             } catch (e) {
-                console.warn('[qBittorrent] httpReq attempt ' + currentAttempt + ' threw:', e);
-                tryNext();
+                console.warn('[qBittorrent] httpReq попытка ' + currentAttempt + ' выбросила ошибку:', e);
+                setTimeout(tryNext, 100);
                 return;
             }
 
@@ -172,6 +230,8 @@
             var maxTries = 20; // 20 × 150 мс = 3 секунды
 
             (function poll() {
+                if (responded) return;
+
                 tries++;
 
                 var response = null;
@@ -180,12 +240,12 @@
                 } catch (e) {}
 
                 if (typeof response === 'string' && response.length > 2) {
-                    callback(response);
+                    finish(response);
                     return;
                 }
 
                 if (tries >= maxTries) {
-                    console.warn('[qBittorrent] httpReq attempt ' + currentAttempt + ' timed out');
+                    console.warn('[qBittorrent] httpReq попытка ' + currentAttempt + ' не вернула ответ');
                     tryNext();
                     return;
                 }
@@ -195,14 +255,14 @@
         }
 
         if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-            fetchRequest(request, callback);
+            finish(null);
             return;
         }
 
         tryNext();
     }
 
-    // Резервный запрос через fetch с поддержкой cookie-сессии
+    // Резервный запрос через fetch
     function fetchRequest(request, callback) {
         if (typeof fetch !== 'function') {
             callback(null);
@@ -230,12 +290,6 @@
                 console.error('[qBittorrent] fetch error:', error);
                 callback(null);
             });
-    }
-
-    // Заглушка для совместимости (больше не используется)
-    function blindRequest(url, method, body) {
-        console.warn('[qBittorrent] blindRequest deprecated');
-        notify('Не удалось отправить запрос в qBittorrent');
     }
 
     // ================= QBITTORRENT =================
@@ -692,6 +746,10 @@
     function initializePlugin() {
         try {
             console.log('[qBittorrent] Инициализация плагина...');
+
+            // Устанавливаем перехват httpReq до первых запросов
+            setupHttpReqInterceptor();
+
             registerSettings();
             addMenuItem();
             initTorrentButton();
