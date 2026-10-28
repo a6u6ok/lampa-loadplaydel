@@ -2,26 +2,22 @@
     'use strict';
 
     // ===== ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =====
-    var DEF_URL = 'http://192.168.1.50:8080';
+    var DEF_URL = 'http://192.168.1.50:9091'; // По умолчанию порт Transmission - 9091
     var DEF_USER = '';
     var DEF_PASS = '';
-    var DEF_BYPASS = true;
-    var DEF_SAVEPATH = '';
-    var DEF_CATEGORY = '';
-    var DEF_RENAME = true;
-    var DEF_CONFIRM = true;
-    var DEF_AUTO_CAT_PATH = true;
-
+    
+    // Для Transmission категорий и путей в API добавления нет,
+    // он сохраняет туда, куда настроено в его конфиге (или в настройках ниже).
+    
     var DEF_PLAYER = 'vimu';
     var DEF_PLAYER_PKG = '';
-    var DEF_LOCAL_PREFIX = 'smb://192.168.1.50/qBittorrent';
+    var DEF_LOCAL_PREFIX = 'smb://192.168.1.50/qBittorrent'; // Путь к папке загрузок на устройстве (SMB)
     var DEF_POLL_MS = 5000;
     var DEF_SHOW_DELETE = true;
     // =================================
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 1000;
-    var CT_FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
 
     var PLAYERS = {
         'vimu':    { pkg: 'net.gtvbox.videoplayer',   name: 'Vimu Player' },
@@ -32,6 +28,8 @@
         'nplayer': { pkg: 'com.newin.nplayer.pro',    name: 'nPlayer' }
     };
 
+    var sessionId = '';
+
     function notify(text) {
         try {
             if (window.Lampa && Lampa.Noty) {
@@ -39,7 +37,7 @@
                 return;
             }
         } catch (e) {}
-        console.log('[qBittorrent-custom]', text);
+        console.log('[Transmission]', text);
     }
 
     function storeGet(key, def) {
@@ -60,20 +58,14 @@
 
     function cfg() {
         return {
-            url: storeGet('qbitc_url', DEF_URL),
-            user: storeGet('qbitc_user', DEF_USER),
-            pass: storeGet('qbitc_pass', DEF_PASS),
-            bypass: isTrue(storeGet('qbitc_bypass', DEF_BYPASS), DEF_BYPASS),
-            savepath: storeGet('qbitc_savepath', DEF_SAVEPATH),
-            category: storeGet('qbitc_category', DEF_CATEGORY),
-            rename: isTrue(storeGet('qbitc_rename', DEF_RENAME), DEF_RENAME),
-            confirm: isTrue(storeGet('qbitc_confirm', DEF_CONFIRM), DEF_CONFIRM),
-            auto_cat_path: isTrue(storeGet('qbitc_auto_cat_path', DEF_AUTO_CAT_PATH), DEF_AUTO_CAT_PATH),
-            player: storeGet('qbitc_player', DEF_PLAYER),
-            player_pkg: storeGet('qbitc_player_pkg', DEF_PLAYER_PKG),
-            local_prefix: storeGet('qbitc_local_prefix', DEF_LOCAL_PREFIX),
-            poll_ms: parseInt(storeGet('qbitc_poll_ms', DEF_POLL_MS), 10) || DEF_POLL_MS,
-            show_delete: isTrue(storeGet('qbitc_show_delete', DEF_SHOW_DELETE), DEF_SHOW_DELETE)
+            url: storeGet('tr_url', DEF_URL),
+            user: storeGet('tr_user', DEF_USER),
+            pass: storeGet('tr_pass', DEF_PASS),
+            player: storeGet('tr_player', DEF_PLAYER),
+            player_pkg: storeGet('tr_player_pkg', DEF_PLAYER_PKG),
+            local_prefix: storeGet('tr_local_prefix', DEF_LOCAL_PREFIX),
+            poll_ms: parseInt(storeGet('tr_poll_ms', DEF_POLL_MS), 10) || DEF_POLL_MS,
+            show_delete: isTrue(storeGet('tr_show_delete', DEF_SHOW_DELETE), DEF_SHOW_DELETE)
         };
     }
 
@@ -87,31 +79,7 @@
         return String(base).replace(/\/+$/, '') + '/' + String(sub).replace(/^\/+/, '');
     }
 
-    function buildAddBody(magnet, title) {
-        var c = cfg();
-        var body = 'urls=' + encodeURIComponent(magnet);
-        var finalSavePath = c.savepath || '';
-        var autoTMM = false;
-
-        if (c.auto_cat_path && c.category) {
-            if (finalSavePath) {
-                finalSavePath = joinPath(finalSavePath, c.category);
-            } else {
-                autoTMM = true;
-            }
-        }
-
-        if (finalSavePath) body += '&savepath=' + encodeURIComponent(finalSavePath);
-        if (c.category) body += '&category=' + encodeURIComponent(c.category);
-        if (c.rename && title) body += '&rename=' + encodeURIComponent(title);
-
-        body += '&paused=false&stopped=false';
-        body += '&autoTMM=' + (autoTMM ? 'true' : 'false');
-
-        console.log('[qBittorrent-custom] add body:', body);
-        return body;
-    }
-
+    // Хеш из magnet-ссылки (Base32 / Base16)
     function magnetHash(magnet) {
         var m = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
         if (!m) return '';
@@ -136,144 +104,149 @@
         return h.toLowerCase();
     }
 
-    // Упрощенный nativeRequest без спама ошибками
-    function nativeRequest(req, cb) {
-        var sig = 0;
-        function attempt() {
-            if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-                cb(null); return;
-            }
-
-            if (sig === 0) {
-                try { AndroidJS.httpReq(JSON.stringify(req)); }
-                catch (e) { sig++; attempt(); return; }
-            } else if (sig === 1) {
-                try {
-                    AndroidJS.httpReq(
-                        req.url,
-                        JSON.stringify({ method: req.method, body: req.body || '', headers: req.headers || {} })
-                    );
-                } catch (e) { cb(null); return; }
-            } else {
-                cb(null); return;
-            }
-
-            var tries = 0;
-            (function poll() {
-                tries++;
-                var r = null;
-                try { r = AndroidJS.getResp(); } catch (e) {}
-                
-                // Если получили строку, которая длиннее 2 символов (чтобы отсечь "[]")
-                if (typeof r === 'string' && r.length > 2) {
-                    cb(r); return;
-                }
-                if (tries > 10) {
-                    sig++; attempt(); return;
-                }
-                setTimeout(poll, 200);
-            })();
+    // Универсальный запрос к Transmission RPC
+    function trRequest(method, args, cb) {
+        var c = cfg();
+        var data = JSON.stringify({ method: method, arguments: args || {} });
+        
+        var headers = { 'Content-Type': 'application/json' };
+        if (sessionId) {
+            headers['X-Transmission-Session-Id'] = sessionId;
         }
-        try { AndroidJS.getResp(); } catch (e) {}
-        attempt();
-    }
+        if (c.user) {
+            headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
+        }
 
-    function qbTorrentInfo(hash, cb) {
-        if (!hash) { cb(null); return; }
-        nativeRequest({
-            url: base() + '/api/v2/torrents/info?hashes=' + hash,
-            method: 'GET'
-        }, function (resp) {
-            if (typeof resp !== 'string' || !resp) { cb(null); return; }
-            try {
-                var arr = JSON.parse(resp);
-                // Если вернулся массив и он не пустой — торрент есть
-                if (Array.isArray(arr) && arr.length > 0) {
-                    cb(arr[0]);
-                } else {
-                    cb(null);
+        // Если нативный мост не работает или ломается, используем fetch
+        // (Transmission обычно отдает CORS нормально, в отличие от qBittorrent)
+        function doFetch() {
+            fetch(base() + '/transmission/rpc', {
+                method: 'POST',
+                headers: headers,
+                body: data
+            }).then(function (res) {
+                // Перехватываем ID сессии
+                if (res.status === 409 || res.headers.has('X-Transmission-Session-Id')) {
+                    var sid = res.headers.get('X-Transmission-Session-Id');
+                    if (sid) sessionId = sid;
+                    
+                    // Если это 409, нужно повторить запрос с новым ID
+                    if (res.status === 409) {
+                        return trRequest(method, args, cb);
+                    }
                 }
-            } catch (e) {
-                cb(null);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+            }).then(function (json) {
+                if (json && json.result === 'success') {
+                    cb(true, json.arguments);
+                } else {
+                    console.warn('[Transmission] RPC Error:', json);
+                    cb(false, json);
+                }
+            }).catch(function (err) {
+                console.warn('[Transmission] fetch error:', err);
+                cb(false, null);
+            });
+        }
+
+        if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
+            doFetch();
+            return;
+        }
+
+        // Пытаемся использовать нативный AndroidJS (с фоллбэком на fetch)
+        try {
+            AndroidJS.httpReq(
+                base() + '/transmission/rpc',
+                JSON.stringify({ method: 'POST', body: data, headers: headers })
+            );
+        } catch (e) {
+            doFetch();
+            return;
+        }
+
+        var tries = 0;
+        (function poll() {
+            tries++;
+            var r = null;
+            try { r = AndroidJS.getResp(); } catch (e) {}
+
+            if (typeof r === 'string' && r.length > 2) {
+                try {
+                    var json = JSON.parse(r);
+                    cb(json.result === 'success', json.arguments);
+                } catch (e) {
+                    doFetch(); // Если пришел мусор, пробуем fetch
+                }
+                return;
             }
-        });
+            if (tries > 10) {
+                doFetch();
+                return;
+            }
+            setTimeout(poll, 200);
+        })();
     }
 
-    function qbAdd(magnet, title, onDone) {
+    function trAdd(magnet, title, onDone) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
             notify('Magnet-ссылка не найдена');
             if (onDone) onDone(false);
             return;
         }
 
-        var c = cfg();
-        notify('Отправляю в qBittorrent...');
-        var body = buildAddBody(magnet, title);
-
-        function finishAdd(resp) {
-            console.log('[qBittorrent-custom] add response:', resp);
-            
-            // Если в ответе есть явная ошибка
-            if (typeof resp === 'string' && /Forbidden|403/i.test(resp)) {
-                notify('qBittorrent: 403. Включи обход аутентификации!');
+        notify('Отправляю в Transmission...');
+        
+        trRequest('torrent-add', { filename: magnet }, function (ok, args) {
+            if (ok) {
+                notify('Добавлено в Transmission ✔');
+                if (onDone) onDone(true, args);
+            } else {
+                notify('Ошибка добавления в Transmission');
                 if (onDone) onDone(false);
-                return;
             }
-            
-            // В остальных случаях (даже если ответ пустой) считаем, что команда ушла
-            if (onDone) onDone(true);
-        }
-
-        if (!c.bypass && c.user) {
-            nativeRequest({
-                url: base() + '/api/v2/auth/login',
-                method: 'POST',
-                body: 'username=' + encodeURIComponent(c.user) + '&password=' + encodeURIComponent(c.pass),
-                headers: CT_FORM
-            }, function () {
-                nativeRequest({
-                    url: base() + '/api/v2/torrents/add',
-                    method: 'POST',
-                    body: body,
-                    headers: CT_FORM
-                }, finishAdd);
-            });
-        } else {
-            nativeRequest({
-                url: base() + '/api/v2/torrents/add',
-                method: 'POST',
-                body: body,
-                headers: CT_FORM
-            }, finishAdd);
-        }
+        });
     }
 
-    function qbDelete(hash, deleteFiles, cb) {
+    function trTorrentInfo(hash, cb) {
+        if (!hash) { cb(null); return; }
+        
+        trRequest('torrent-get', { 
+            ids: [ hash ], 
+            fields: [ 'id', 'hashString', 'name', 'percentDone', 'status', 'downloadDir', 'totalSize', 'files' ] 
+        }, function (ok, args) {
+            if (ok && args && args.torrents && args.torrents.length > 0) {
+                cb(args.torrents[0]);
+            } else {
+                cb(null);
+            }
+        });
+    }
+
+    function trDelete(hash, deleteFiles, cb) {
         if (!hash) { if (cb) cb(false); return; }
-        var body = 'hashes=' + encodeURIComponent(hash) + '&deleteFiles=' + (deleteFiles ? 'true' : 'false');
-        nativeRequest({
-            url: base() + '/api/v2/torrents/delete',
-            method: 'POST',
-            body: body,
-            headers: CT_FORM
-        }, function (resp) {
-            var ok = !(typeof resp === 'string' && /Fails|Forbidden|403/i.test(resp));
+        
+        trRequest('torrent-remove', { 
+            ids: [ hash ], 
+            'delete-local-data': deleteFiles 
+        }, function (ok) {
             if (cb) cb(ok);
         });
     }
 
+    // Формирование пути для плеера
     function toDevicePath(torrent) {
         var c = cfg();
-        var serverPath = torrent.content_path || '';
-        if (!serverPath) serverPath = joinPath(torrent.save_path || c.savepath || '', torrent.name || '');
+        // В Transmission нет content_path, есть downloadDir (папка загрузки) и name (название)
+        var serverPath = joinPath(torrent.downloadDir || '', torrent.name || '');
+        
         if (!c.local_prefix) return serverPath;
 
-        var baseServer = String(c.savepath || '').replace(/\/+$/, '');
-        var rel = serverPath;
-        if (baseServer && serverPath.indexOf(baseServer) === 0) {
-            rel = serverPath.substring(baseServer.length).replace(/^\/+/, '');
-        }
-        return joinPath(c.local_prefix, rel);
+        // Заменяем серверный путь на локальный (SMB)
+        // Если downloadDir равен /opt/share/Downloads, а local_prefix = smb://192.168.1.50/qBittorrent
+        // То путь будет smb://192.168.1.50/qBittorrent/Название раздачи
+        return joinPath(c.local_prefix, torrent.name || '');
     }
 
     function playerIntent(fileUri, title) {
@@ -339,36 +312,36 @@
     function registerSettings() {
         try {
             if (!window.Lampa || !Lampa.SettingsApi) return;
+            
             Lampa.SettingsApi.addComponent({
-                component: 'qbit_custom',
-                icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
-                name: 'qBittorrent custom'
+                component: 'tr_client',
+                icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>',
+                name: 'Transmission'
             });
-            // ... (тут все те же addParam, что и в предыдущем файле, я их не менял)
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_url', type: 'input', values: '', default: DEF_URL }, field: { name: 'Адрес сервера', description: 'http://192.168.1.50:8080' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_user', type: 'input', values: '', default: DEF_USER }, field: { name: 'Логин', description: 'Если не используется bypass' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Если не используется bypass' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_bypass', type: 'trigger', default: DEF_BYPASS }, field: { name: 'Обход аутентификации', description: 'Включён bypass для подсети' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_savepath', type: 'input', values: '', default: DEF_SAVEPATH }, field: { name: 'Базовый путь', description: 'Серверный путь /app/qBittorrent' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_category', type: 'input', values: '', default: DEF_CATEGORY }, field: { name: 'Категория', description: 'Например: video' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_auto_cat_path', type: 'trigger', default: DEF_AUTO_CAT_PATH }, field: { name: 'Добавлять категорию к пути', description: 'Сохранять в подпапку категории' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_rename', type: 'trigger', default: DEF_RENAME }, field: { name: 'Переименовывать', description: 'В название раздачи' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_confirm', type: 'trigger', default: DEF_CONFIRM }, field: { name: 'Проверять добавление', description: 'Запрашивать статус торрента' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_player', type: 'select', values: {'vimu': 'Vimu Player', 'vlc': 'VLC', 'mx': 'MX Player', 'kodi': 'Kodi', 'just': 'Just (Video) Player', 'nplayer': 'nPlayer', 'custom': 'Другой'}, default: DEF_PLAYER }, field: { name: 'Медиаплеер', description: 'Для открытия торрента' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_player_pkg', type: 'input', values: '', default: DEF_PLAYER_PKG }, field: { name: 'Пакет плеера', description: 'Для пункта «Другой»' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.50/qBittorrent' }});
-            Lampa.SettingsApi.addParam({ component: 'qbit_custom', param: { name: 'qbitc_show_delete', type: 'trigger', default: DEF_SHOW_DELETE }, field: { name: 'Кнопка «Удалить»', description: 'Показывать кнопку удаления' }});
-        } catch (e) {}
+
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_url', type: 'input', values: '', default: DEF_URL }, field: { name: 'Адрес сервера', description: 'http://192.168.1.50:9091' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_user', type: 'input', values: '', default: DEF_USER }, field: { name: 'Логин', description: 'Логин RPC (если включена авторизация)' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Пароль RPC' }});
+            
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player', type: 'select', values: {'vimu': 'Vimu Player', 'vlc': 'VLC', 'mx': 'MX Player', 'kodi': 'Kodi', 'just': 'Just (Video) Player', 'nplayer': 'nPlayer', 'custom': 'Другой'}, default: DEF_PLAYER }, field: { name: 'Медиаплеер', description: 'Для открытия торрента' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player_pkg', type: 'input', values: '', default: DEF_PLAYER_PKG }, field: { name: 'Пакет плеера', description: 'Для пункта «Другой»' }});
+            
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.50/qBittorrent (куда смотрит Vimu)' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_show_delete', type: 'trigger', default: DEF_SHOW_DELETE }, field: { name: 'Кнопка «Удалить»', description: 'Показывать кнопку удаления' }});
+            
+        } catch (e) {
+            console.error('[Transmission] Ошибка настроек:', e);
+        }
     }
 
     function addMenuItem() {
         try {
             if (!window.Lampa || !Lampa.Menu) return;
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
-            Lampa.Menu.addButton(icon, 'qBittorrent', function () {
+            Lampa.Menu.addButton(icon, 'Transmission', function () {
                 Lampa.Controller.toggle('settings');
                 setTimeout(function () {
-                    var item = document.querySelector('[data-component="qbit_custom"]');
+                    var item = document.querySelector('[data-component="tr_client"]');
                     if (item) item.click();
                 }, 100);
             });
@@ -377,7 +350,7 @@
 
     function startProgressWatch(item, hash, title, initialInfo) {
         if (!hash) return;
-        var playBtn = item.querySelector('.qbit-player-btn');
+        var playBtn = item.querySelector('.tr-player-btn');
         if (!playBtn || playBtn.getAttribute('data-ready') === '1') return;
 
         var stopped = false, timer = null, tries = 0, MAX_TRIES = 720;
@@ -387,7 +360,7 @@
         function activate(torrent) {
             if (stopped || playBtn.getAttribute('data-ready') === '1') return;
             playBtn.setAttribute('data-ready', '1');
-            playBtn.classList.remove('qbit-player-btn--waiting');
+            playBtn.classList.remove('tr-btn--waiting');
             playBtn.textContent = '▶ Плеер';
 
             bindPress(playBtn, function () {
@@ -395,16 +368,16 @@
                 playerIntent(path, title);
             });
 
-            var delBtn = item.querySelector('.qbit-del-btn');
+            var delBtn = item.querySelector('.tr-del-btn');
             if (delBtn && delBtn.getAttribute('data-ready') !== '1') {
                 delBtn.setAttribute('data-ready', '1');
-                delBtn.classList.remove('qbit-player-btn--waiting');
+                delBtn.classList.remove('tr-btn--waiting');
                 bindPress(delBtn, function () {
                     notify('Удаляю торрент...');
-                    qbDelete(hash, false, function (ok) {
+                    trDelete(hash, false, function (ok) {
                         notify(ok ? 'Торрент удалён ✔' : 'Не удалось удалить');
                         if (ok) {
-                            var btns = item.querySelectorAll('.qbit-direct-btn');
+                            var btns = item.querySelectorAll('.tr-direct-btn');
                             for (var i = 0; i < btns.length; i++) btns[i].remove();
                         }
                     });
@@ -413,23 +386,24 @@
             cleanup();
         }
 
-        function tick(info) {
+        function tick(torrent) {
             if (stopped) return;
-            if (!info) {
+            if (!torrent) {
                 tries++;
                 if (tries > MAX_TRIES) { cleanup(); return; }
-                timer = setTimeout(function () { qbTorrentInfo(hash, tick); }, cfg().poll_ms);
+                timer = setTimeout(function () { trTorrentInfo(hash, tick); }, cfg().poll_ms);
                 return;
             }
 
-            var progress = typeof info.progress === 'number' ? info.progress : 0;
-            var done = progress >= 1 || info.state === 'uploading' || info.state === 'stalledUP' || info.state === 'pausedUP' || info.state === 'queuedUP' || info.state === 'forcedUP';
+            // В Transmission: status 6 = Seeding (Раздача, т.е. скачан), 0 = Stopped, 4 = Downloading
+            var progress = typeof torrent.percentDone === 'number' ? torrent.percentDone : 0;
+            var done = progress >= 1 || torrent.status === 6 || torrent.status === 5 || torrent.status === 1;
 
-            if (done) { activate(info); return; }
+            if (done) { activate(torrent); return; }
 
             tries++;
             if (tries > MAX_TRIES) { cleanup(); return; }
-            timer = setTimeout(function () { qbTorrentInfo(hash, tick); }, cfg().poll_ms);
+            timer = setTimeout(function () { trTorrentInfo(hash, tick); }, cfg().poll_ms);
         }
 
         tick(initialInfo || null);
@@ -443,7 +417,7 @@
 
             var item = e.item.jquery ? e.item[0] : e.item;
             var data = e.element || {};
-            if (!item || item.querySelector('.qbit-direct-btn')) return;
+            if (!item || item.querySelector('.tr-direct-btn')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title  = data.Title || data.title || '';
@@ -451,19 +425,18 @@
             var c = cfg();
 
             var addBtn = document.createElement('div');
-            addBtn.className = 'qbit-direct-btn selector';
+            addBtn.className = 'tr-direct-btn selector';
             addBtn.tabIndex = 0;
-            addBtn.textContent = '⬇ В qBittorrent';
+            addBtn.textContent = '⬇ В Transmission';
             
             bindPress(addBtn, function () {
-                qbAdd(magnet, title, function (ok) {
-                    // ВАЖНО: запускаем фоновый опрос сразу после отправки!
+                trAdd(magnet, title, function (ok) {
                     if (hash) startProgressWatch(item, hash, title);
                 });
             });
 
             var playBtn = document.createElement('div');
-            playBtn.className = 'qbit-direct-btn qbit-player-btn qbit-player-btn--waiting selector';
+            playBtn.className = 'tr-direct-btn tr-player-btn tr-btn--waiting selector';
             playBtn.tabIndex = 0;
             playBtn.textContent = '▶ Плеер';
             playBtn.setAttribute('data-ready', '0');
@@ -471,7 +444,7 @@
             var delBtn = null;
             if (c.show_delete) {
                 delBtn = document.createElement('div');
-                delBtn.className = 'qbit-direct-btn qbit-del-btn qbit-player-btn--waiting selector';
+                delBtn.className = 'tr-direct-btn tr-del-btn tr-btn--waiting selector';
                 delBtn.tabIndex = 0;
                 delBtn.textContent = '🗑 Удалить';
                 delBtn.setAttribute('data-ready', '0');
@@ -481,10 +454,9 @@
             item.appendChild(playBtn);
             if (delBtn) item.appendChild(delBtn);
 
-            // Если торрент уже в qB (мы вернулись в карточку) — проверяем
             if (hash) {
-                qbTorrentInfo(hash, function (info) {
-                    if (info) startProgressWatch(item, hash, title, info);
+                trTorrentInfo(hash, function (torrent) {
+                    if (torrent) startProgressWatch(item, hash, title, torrent);
                 });
             }
         });
@@ -496,21 +468,21 @@
             addMenuItem();
             initTorrentButton();
 
-            if (!document.getElementById('qbitc-style')) {
+            if (!document.getElementById('tr-style')) {
                 var style = document.createElement('style');
-                style.id = 'qbitc-style';
+                style.id = 'tr-style';
                 style.textContent =
-                    '.qbit-direct-btn{display:inline-flex;align-items:center;justify-content:center;margin:8px;padding:10px 18px;background:#303638;color:white;border:2px solid #888;border-radius:6px;font-size:18px;min-width:160px;box-sizing:border-box;position:relative;z-index:999;}' +
-                    '.qbit-direct-btn.focus{border-color:white;background:#51595c;}' +
-                    '.qbit-player-btn--waiting{opacity:0.45;border-color:#555;}' +
-                    '.qbit-player-btn[data-ready="1"]{border-color:#6a6;}' +
-                    '.qbit-player-btn[data-ready="1"].focus{border-color:white;background:#3f6b3f;}' +
-                    '.qbit-del-btn[data-ready="1"]{border-color:#a55;}' +
-                    '.qbit-del-btn[data-ready="1"].focus{border-color:white;background:#6b3f3f;}';
+                    '.tr-direct-btn{display:inline-flex;align-items:center;justify-content:center;margin:8px;padding:10px 18px;background:#303638;color:white;border:2px solid #888;border-radius:6px;font-size:18px;min-width:160px;box-sizing:border-box;position:relative;z-index:999;}' +
+                    '.tr-direct-btn.focus{border-color:white;background:#51595c;}' +
+                    '.tr-btn--waiting{opacity:0.45;border-color:#555;}' +
+                    '.tr-player-btn[data-ready="1"]{border-color:#6a6;}' +
+                    '.tr-player-btn[data-ready="1"].focus{border-color:white;background:#3f6b3f;}' +
+                    '.tr-del-btn[data-ready="1"]{border-color:#a55;}' +
+                    '.tr-del-btn[data-ready="1"].focus{border-color:white;background:#6b3f3f;}';
                 document.head.appendChild(style);
             }
         } catch (error) {
-            console.error('[qBittorrent-custom] Ошибка инициализации:', error);
+            console.error('[Transmission] Ошибка инициализации:', error);
         }
     }
 
