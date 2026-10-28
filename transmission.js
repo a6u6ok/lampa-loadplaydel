@@ -22,6 +22,19 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
+    // Список популярных плееров для Android TV / приставок
+    var PLAYERS = [
+        { title: 'VLC',                  pkg: 'org.videolan.vlc' },
+        { title: 'MX Player',            pkg: 'com.mxtech.videoplayer.ad' },
+        { title: 'Vimu Player',          pkg: 'net.gtvbox.videoplayer' },
+        { title: 'Just (Video) Player',  pkg: 'com.brouken.player' },
+        { title: 'Kodi',                 pkg: 'org.xbmc.kodi' },
+        { title: 'nPlayer',              pkg: 'com.newin.nplayer.pro' },
+        { title: 'Xplayer',              pkg: 'com.xplayer.player' },
+        { title: 'Nova Video Player',    pkg: 'org.courville.nova' },
+        { title: 'Archos Video Player',  pkg: 'com.archos.mediacenter.video' }
+    ];
+
     // ================= УТИЛИТЫ =================
 
     function notify(text) {
@@ -416,6 +429,54 @@
 
     // ================= ВЫБОР И ЗАПУСК ПЛЕЕРА =================
 
+    // Показ списка популярных плееров через Lampa.Select
+    function showPlayerPicker() {
+        if (!window.Lampa || !Lampa.Select) {
+            notify('Интерфейс выбора недоступен');
+            return;
+        }
+
+        var items = PLAYERS.map(function (p) {
+            return { title: p.title, pkg: p.pkg };
+        });
+
+        // Добавляем пункт "Другой (ввести вручную)"
+        items.push({ title: 'Другой (ввести вручную)', pkg: 'custom' });
+
+        var currentPkg = cfg().player_package;
+        var startIndex = 0;
+
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].pkg === currentPkg) {
+                startIndex = i;
+                break;
+            }
+        }
+
+        Lampa.Select.show({
+            title: 'Выберите плеер',
+            items: items,
+            start: startIndex,
+            onSelect: function (item) {
+                if (item.pkg === 'custom') {
+                    // Если выбран "Другой" — просим ввести пакет вручную
+                    var manual = window.prompt('Введите пакет плеера (например, org.videolan.vlc):', currentPkg);
+                    if (manual !== null) {
+                        storeSet('qbit_player_package', manual.trim());
+                        notify('Пакет сохранён: ' + manual.trim());
+                    }
+                } else {
+                    storeSet('qbit_player_package', item.pkg);
+                    notify('Выбран плеер: ' + item.title);
+                }
+                Lampa.Controller.toggle('settings');
+            },
+            onBack: function () {
+                Lampa.Controller.toggle('settings');
+            }
+        });
+    }
+
     // Запуск приложения по пакету через ACTION_MAIN (без видео)
     function launchByPackage(packageName) {
         var pkg = String(packageName || '').trim();
@@ -436,7 +497,6 @@
                 Lampa.Android &&
                 typeof Lampa.Android.openPlayer === 'function'
             ) {
-                // Передаём данные для MAIN-интента
                 Lampa.Android.openPlayer('', intent);
                 return true;
             }
@@ -471,67 +531,21 @@
         return false;
     }
 
-    // Показ системного селектора плееров через ACTION_PICK_ACTIVITY
-    function showSystemPlayerPicker() {
-        // Формируем вложенный интент для запуска (MAIN/LAUNCHER без данных)
-        var innerIntent = {
-            action: 'android.intent.action.MAIN',
-            category: 'android.intent.category.LAUNCHER'
-        };
-
-        var pickIntent = {
-            action: 'android.intent.action.PICK_ACTIVITY',
-            extra: {
-                'android.intent.extra.INTENT': innerIntent
-            }
-        };
-
-        try {
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.startActivityForResult === 'function'
-            ) {
-                AndroidJS.startActivityForResult(JSON.stringify(pickIntent));
-                notify('Выберите плеер из списка');
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] startActivityForResult failed:', e);
-        }
-
-        try {
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.startActivity === 'function'
-            ) {
-                AndroidJS.startActivity(JSON.stringify(pickIntent));
-                notify('Выберите плеер из списка');
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] startActivity(PICK) failed:', e);
-        }
-
-        notify('Не удалось открыть выбор плеера. Укажите пакет в настройках вручную.');
-    }
-
-    // Обработчик кнопки «▶ Открыть плеер»
+    // Обработчик кнопки «▶ Открыть плеер» в карточке
     function handlePlayerButton() {
         var config = cfg();
 
-        // Если пакет сохранён — запускаем приложение
         if (config.player_package) {
             if (launchByPackage(config.player_package)) {
                 notify('Запускаю плеер');
                 return;
             }
 
-            notify('Плеер не найден, выберите заново');
+            notify('Плеер не найден, проверьте пакет');
             storeSet('qbit_player_package', '');
+        } else {
+            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
         }
-
-        // Пакет не задан — открываем системный селектор (без видео)
-        showSystemPlayerPicker();
     }
 
     // ================= НАЖАТИЯ =================
@@ -638,10 +652,26 @@
                 field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
             });
 
+            // Кнопка выбора плеера из готового списка
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: { name: 'qbit_player_select_btn', type: 'button', default: '' },
+                field: {
+                    name: 'Выбрать плеер из списка',
+                    description: 'Открыть список популярных Android-плееров',
+                    onRender: function (item) {
+                        item.on('hover:enter', function () {
+                            showPlayerPicker();
+                        });
+                    }
+                }
+            });
+
+            // Текстовое поле для отображения/ручного ввода пакета
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: { name: 'qbit_player_package', type: 'input', values: '', default: DEF_PLAYER_PACKAGE },
-                field: { name: 'Пакет плеера', description: 'Заполняется автоматически после выбора плеера. Например org.videolan.vlc' }
+                field: { name: 'Текущий пакет плеера', description: 'Заполняется автоматически. Можно ввести вручную.' }
             });
 
             console.log('[qBittorrent] Настройки зарегистрированы');
