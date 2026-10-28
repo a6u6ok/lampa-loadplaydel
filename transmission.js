@@ -18,7 +18,7 @@
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
-    var POLL_INTERVAL = 5000; // 5 секунд
+    var POLL_INTERVAL = 5000;
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -114,84 +114,128 @@
     // ================= HTTP ЗАПРОСЫ =================
 
     function nativeRequest(request, callback) {
-        var signature = 0;
+        // Пять известных сигнатур AndroidJS.httpReq в разных сборках Lampa
+        var attempts = [
+            function () {
+                AndroidJS.httpReq(JSON.stringify(request));
+            },
+            function () {
+                AndroidJS.httpReq(
+                    request.url,
+                    JSON.stringify({
+                        method: request.method,
+                        body: request.body || '',
+                        headers: request.headers || {}
+                    })
+                );
+            },
+            function () {
+                AndroidJS.httpReq(request.url, request.method, request.body || '');
+            },
+            function () {
+                AndroidJS.httpReq(
+                    request.url,
+                    request.method,
+                    request.headers || {},
+                    request.body || ''
+                );
+            },
+            function () {
+                AndroidJS.httpReq(request);
+            }
+        ];
 
-        function drain() {
-            try { AndroidJS.getResp(); } catch (error) {}
-        }
+        var currentAttempt = 0;
 
-        function attempt() {
-            if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-                callback(null);
+        function tryNext() {
+            if (currentAttempt >= attempts.length) {
+                console.warn('[qBittorrent] nativeRequest: all signatures failed, falling back to fetch');
+                fetchRequest(request, callback);
                 return;
             }
 
-            if (signature === 0) {
-                try {
-                    AndroidJS.httpReq(JSON.stringify(request));
-                } catch (error) {
-                    signature++;
-                    attempt();
-                    return;
-                }
-            } else if (signature === 1) {
-                try {
-                    AndroidJS.httpReq(
-                        request.url,
-                        JSON.stringify({
-                            method: request.method,
-                            body: request.body || '',
-                            headers: request.headers || {}
-                        })
-                    );
-                } catch (error) {
-                    callback(null);
-                    return;
-                }
-            } else {
-                callback(null);
+            var fn = attempts[currentAttempt];
+            currentAttempt++;
+
+            // Очищаем буфер ответа перед новым запросом
+            try { AndroidJS.getResp(); } catch (e) {}
+
+            try {
+                fn();
+            } catch (e) {
+                console.warn('[qBittorrent] httpReq attempt ' + currentAttempt + ' threw:', e);
+                tryNext();
                 return;
             }
 
             var tries = 0;
+            var maxTries = 20; // 20 × 150 мс = 3 секунды
+
             (function poll() {
                 tries++;
-                var response = null;
-                try { response = AndroidJS.getResp(); } catch (error) {}
 
-                if (typeof response === 'string' && response.length) {
+                var response = null;
+                try {
+                    response = AndroidJS.getResp();
+                } catch (e) {}
+
+                if (typeof response === 'string' && response.length > 2) {
                     callback(response);
                     return;
                 }
-                if (tries > 20) {
-                    signature++;
-                    attempt();
+
+                if (tries >= maxTries) {
+                    console.warn('[qBittorrent] httpReq attempt ' + currentAttempt + ' timed out');
+                    tryNext();
                     return;
                 }
+
                 setTimeout(poll, 150);
             })();
         }
 
-        drain();
-        attempt();
-    }
-
-    function blindRequest(url, method, body) {
-        if (typeof fetch !== 'function') {
-            notify('Нет поддержки транспорта: нативный запрос недоступен');
+        if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
+            fetchRequest(request, callback);
             return;
         }
 
-        fetch(url, {
-            method: method,
-            mode: 'no-cors',
-            headers: CT_FORM,
-            body: body
-        }).then(function () {
-            notify('Запрос отправлен, но ответ недоступен для проверки');
-        }).catch(function (error) {
-            console.error('[qBittorrent] blind request error:', error);
-        });
+        tryNext();
+    }
+
+    // Резервный запрос через fetch с поддержкой cookie-сессии
+    function fetchRequest(request, callback) {
+        if (typeof fetch !== 'function') {
+            callback(null);
+            return;
+        }
+
+        var options = {
+            method: request.method || 'GET',
+            headers: request.headers || CT_FORM,
+            credentials: 'include'
+        };
+
+        if (request.body) {
+            options.body = request.body;
+        }
+
+        fetch(request.url, options)
+            .then(function (res) {
+                return res.text();
+            })
+            .then(function (text) {
+                callback(text);
+            })
+            .catch(function (error) {
+                console.error('[qBittorrent] fetch error:', error);
+                callback(null);
+            });
+    }
+
+    // Заглушка для совместимости (больше не используется)
+    function blindRequest(url, method, body) {
+        console.warn('[qBittorrent] blindRequest deprecated');
+        notify('Не удалось отправить запрос в qBittorrent');
     }
 
     // ================= QBITTORRENT =================
@@ -246,7 +290,7 @@
 
         function finishAdd(response) {
             if (response === null || response === undefined) {
-                blindRequest(base() + '/api/v2/torrents/add', 'POST', body);
+                notify('Не удалось получить ответ от qBittorrent');
                 return;
             }
 
@@ -302,7 +346,7 @@
 
         function finishDelete(response) {
             if (response === null || response === undefined) {
-                blindRequest(base() + '/api/v2/torrents/delete', 'POST', body);
+                notify('Не удалось получить ответ от qBittorrent');
                 return;
             }
             if (/Forbidden|403/i.test(response)) {
@@ -334,10 +378,6 @@
     }
 
     // ================= ПРОВЕРКА СТАТУСА ТОРРЕНТА =================
-    //
-    // Запрашиваем у qBittorrent информацию о торренте по хешу.
-    // Если progress === 1 (100%), значит, файл уже лежит в папке загрузок
-    // и его можно открыть по SMB-пути. Возвращаем true/false.
 
     function checkTorrentReady(hash, callback) {
         if (!hash) {
@@ -363,7 +403,6 @@
                 }
 
                 var t = torrents[0];
-                // progress — от 0 до 1, completed — байты, state — статус
                 var ready =
                     (typeof t.progress === 'number' && t.progress >= 1) ||
                     (t.state && /^(uploading|stalledUP|pausedUP|queuedUP|forcedUP)$/i.test(t.state));
@@ -572,8 +611,7 @@
         return button;
     }
 
-    // Обновляет видимость кнопок «Плеер» и «Удалить» в зависимости от статуса торрента
-    function updateActionButtons(item, hash, magnet, title) {
+    function updateActionButtons(item, hash) {
         var actions = item.querySelector('.qbit-direct-actions');
         if (!actions) return;
 
@@ -582,11 +620,8 @@
 
         function setVisible(btn, visible) {
             if (!btn) return;
-            if (visible) {
-                btn.classList.remove('qbit-hidden');
-            } else {
-                btn.classList.add('qbit-hidden');
-            }
+            if (visible) btn.classList.remove('qbit-hidden');
+            else btn.classList.add('qbit-hidden');
         }
 
         checkTorrentReady(hash, function (ready) {
@@ -615,17 +650,14 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Кнопка добавления — всегда видна
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
                 qbAdd(magnet, title);
             });
 
-            // Кнопка плеера — видна только когда файл готов
             var playerButton = createButton('qbit-direct-player qbit-hidden', '▶ Открыть плеер', function () {
                 handlePlayerButton();
             });
 
-            // Кнопка удаления — видна только когда файл готов
             var deleteButton = createButton('qbit-direct-delete qbit-hidden', '🗑 Удалить', function () {
                 qbDelete(magnet);
             });
@@ -636,11 +668,9 @@
 
             item.appendChild(actions);
 
-            // Проверяем статус и показываем/скрываем кнопки
             if (hash) {
-                updateActionButtons(item, hash, magnet, title);
+                updateActionButtons(item, hash);
 
-                // Периодическая проверка, пока торрент не будет готов
                 var pollTimer = setInterval(function () {
                     if (!document.body.contains(item)) {
                         clearInterval(pollTimer);
@@ -648,7 +678,7 @@
                     }
                     checkTorrentReady(hash, function (ready) {
                         if (ready) {
-                            updateActionButtons(item, hash, magnet, title);
+                            updateActionButtons(item, hash);
                             clearInterval(pollTimer);
                         }
                     });
