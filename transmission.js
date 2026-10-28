@@ -416,49 +416,54 @@
 
     // ================= ВЫБОР И ЗАПУСК ПЛЕЕРА =================
 
-    // Тестовый медиа-URL нужен только для того, чтобы Android
-    // показал системный селектор приложений, умеющих открывать video/*.
     var TEST_VIDEO_URL =
         'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
 
-    // Запуск приложения-плеера по пакету (без воспроизведения видео)
     function launchByPackage(packageName) {
         var pkg = String(packageName || '').trim();
 
         if (!pkg) return false;
 
-        var intentUri =
-            'intent:#Intent' +
-            ';action=android.intent.action.MAIN' +
-            ';category=android.intent.category.LAUNCHER' +
-            ';package=' + pkg +
-            ';end';
-
         debugNotify('Запускаю плеер: ' + pkg);
 
         try {
-            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
-                AndroidJS.openUrl(intentUri);
+            if (
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function'
+            ) {
+                Lampa.Android.openPlayer('', {
+                    package: pkg,
+                    title: ''
+                });
                 return true;
             }
 
-            if (window.Android && typeof Android.openUrl === 'function') {
-                Android.openUrl(intentUri);
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer('', pkg, '', 'video/*');
                 return true;
             }
 
-            var opened = window.open(intentUri, '_blank');
-
-            return !!opened;
+            if (
+                window.Android &&
+                typeof Android.openPlayer === 'function'
+            ) {
+                Android.openPlayer('', {
+                    package: pkg,
+                    title: ''
+                });
+                return true;
+            }
         } catch (error) {
             console.error('[qBittorrent] player launch error:', error);
-            return false;
         }
+
+        return false;
     }
 
-    // Системный селектор плееров Android.
-    // Пытаемся показать список без запуска; если сборка Lampa не
-    // поддерживает PICK_ACTIVITY — фолбэк на ACTION_VIEW с тестовым видео.
     function showSystemPlayerPicker() {
         var viewIntent = {
             action: 'android.intent.action.VIEW',
@@ -501,64 +506,59 @@
             console.warn('[qBittorrent] startActivity(PICK) failed:', e);
         }
 
-        // 3) ACTION_VIEW с пустым package — селектор появится, при выборе
-        //    плеер откроет тестовое видео (закроется после остановки)
+        // 3) ACTION_VIEW через нативные мосты Lampa (без location.href)
         try {
             if (
-                window.AndroidJS &&
-                typeof AndroidJS.startActivity === 'function'
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function'
             ) {
-                AndroidJS.startActivity(JSON.stringify(viewIntent));
+                Lampa.Android.openPlayer(TEST_VIDEO_URL, {
+                    title: 'Выбор плеера'
+                });
+                notify('Выберите плеер из списка');
+                return;
+            }
+
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(TEST_VIDEO_URL, '', 'Выбор плеера', 'video/*');
+                notify('Выберите плеер из списка');
+                return;
+            }
+
+            if (
+                window.Android &&
+                typeof Android.openPlayer === 'function'
+            ) {
+                Android.openPlayer(TEST_VIDEO_URL, {
+                    title: 'Выбор плеера'
+                });
                 notify('Выберите плеер из списка');
                 return;
             }
         } catch (e) {
-            console.warn('[qBittorrent] startActivity(VIEW) failed:', e);
+            console.warn('[qBittorrent] openPlayer(VIEW) failed:', e);
         }
 
-        // 4) intent:// через openUrl
-        try {
-            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
-                AndroidJS.openUrl(
-                    'intent:' + TEST_VIDEO_URL +
-                    '#Intent;action=android.intent.action.VIEW;type=video/*;end'
-                );
-                notify('Выберите плеер из списка');
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] openUrl(intent) failed:', e);
-        }
-
-        // 5) Последний резерв — intent:// через location.href
-        try {
-            window.location.href =
-                'intent:' + TEST_VIDEO_URL +
-                '#Intent;action=android.intent.action.VIEW;type=video/*;end';
-            notify('Выберите плеер из списка');
-        } catch (e) {
-            console.warn('[qBittorrent] intent:// failed:', e);
-            notify('Не удалось открыть выбор плеера');
-        }
+        notify('Не удалось открыть выбор плеера');
     }
 
-    // Обработчик кнопки «▶ Открыть плеер»
     function handlePlayerButton() {
         var config = cfg();
 
-        // Если пакет уже сохранён — сразу запускаем приложение
         if (config.player_package) {
             if (launchByPackage(config.player_package)) {
                 notify('Запускаю плеер');
                 return;
             }
 
-            // Не удалось — сбрасываем и показываем выбор
             notify('Плеер не найден, выберите заново');
             storeSet('qbit_player_package', '');
         }
 
-        // Пакет не задан — открываем системный селектор
         showSystemPlayerPicker();
     }
 
