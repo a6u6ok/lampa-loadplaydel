@@ -128,9 +128,37 @@
         return body;
     }
 
+    // ===== ИСПРАВЛЕНО: поддержка Base16 и Base32 =====
     function magnetHash(magnet) {
-        var m = /urn:btih:([a-zA-Z0-9]+)/.exec(magnet || '');
-        return m ? m[1].toLowerCase() : '';
+        var m = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
+        if (!m) return '';
+
+        var h = m[1];
+
+        // Base16 (hex, 40 символов) — оставляем как есть
+        if (/^[0-9a-fA-F]{40}$/.test(h)) return h.toLowerCase();
+
+        // Base32 (32 символа) — конвертируем в hex
+        if (/^[A-Z2-7]{32}$/i.test(h)) {
+            try {
+                var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+                var bits = '';
+                for (var i = 0; i < h.length; i++) {
+                    var idx = alphabet.indexOf(h[i].toUpperCase());
+                    if (idx < 0) return '';
+                    bits += idx.toString(2).padStart(5, '0');
+                }
+                var hex = '';
+                for (var j = 0; j + 4 <= bits.length; j += 4) {
+                    hex += parseInt(bits.substr(j, 4), 2).toString(16);
+                }
+                return hex.toLowerCase();
+            } catch (e) {
+                return '';
+            }
+        }
+
+        return h.toLowerCase();
     }
 
     function nativeRequest(req, cb) {
@@ -206,16 +234,48 @@
         });
     }
 
+    // ===== ИСПРАВЛЕНО: ретраи + корректный парсинг JSON =====
     function confirmAdd(magnet, cb) {
         var hash = magnetHash(magnet);
         if (!hash) { cb(false); return; }
 
-        nativeRequest({
-            url: base() + '/api/v2/torrents/info?hashes=' + hash,
-            method: 'GET'
-        }, function (resp) {
-            cb(typeof resp === 'string' && resp.toLowerCase().indexOf(hash) !== -1);
-        });
+        var attempts = 0;
+        var MAX_ATTEMPTS = 5;
+        var INTERVAL = 1000;
+
+        function tryOnce() {
+            attempts++;
+
+            nativeRequest({
+                url: base() + '/api/v2/torrents/info?hashes=' + hash,
+                method: 'GET'
+            }, function (resp) {
+                var found = false;
+
+                if (typeof resp === 'string' && resp) {
+                    try {
+                        var arr = JSON.parse(resp);
+                        if (Array.isArray(arr) && arr.length > 0) found = true;
+                    } catch (e) {
+                        // не JSON — возможно, HTML логина или текст ошибки
+                        if (resp.toLowerCase().indexOf(hash) !== -1) found = true;
+                    }
+                }
+
+                if (found) {
+                    cb(true);
+                    return;
+                }
+
+                if (attempts < MAX_ATTEMPTS) {
+                    setTimeout(tryOnce, INTERVAL);
+                } else {
+                    cb(false);
+                }
+            });
+        }
+
+        tryOnce();
     }
 
     function qbTorrentInfo(hash, cb) {
