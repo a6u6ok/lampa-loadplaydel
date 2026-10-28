@@ -673,24 +673,7 @@
             var hash   = magnetHash(magnet);
             var c = cfg();
 
-            // --- Кнопка «Плеер» (слева, пока неактивна) ---
-            var playBtn = document.createElement('div');
-            playBtn.className = 'qbit-direct-btn qbit-player-btn qbit-player-btn--waiting selector';
-            playBtn.tabIndex = 0;
-            playBtn.textContent = '▶ Плеер';
-            playBtn.setAttribute('data-ready', '0');
-
-            // --- Кнопка «Удалить» (опционально, слева) ---
-            var delBtn = null;
-            if (c.show_delete) {
-                delBtn = document.createElement('div');
-                delBtn.className = 'qbit-direct-btn qbit-del-btn qbit-player-btn--waiting selector';
-                delBtn.tabIndex = 0;
-                delBtn.textContent = '🗑 Удалить';
-                delBtn.setAttribute('data-ready', '0');
-            }
-
-            // --- Кнопка «В qBittorrent» (справа) ---
+            // --- Кнопка «В qBittorrent» (слева) ---
             var addBtn = document.createElement('div');
             addBtn.className = 'qbit-direct-btn selector';
             addBtn.tabIndex = 0;
@@ -703,10 +686,27 @@
                 });
             });
 
-            // Порядок: Удалить (если есть) → Плеер → qBittorrent
-            if (delBtn) item.appendChild(delBtn);
-            item.appendChild(playBtn);
+            // --- Кнопка «Плеер» (справа, пока неактивна) ---
+            var playBtn = document.createElement('div');
+            playBtn.className = 'qbit-direct-btn qbit-player-btn qbit-player-btn--waiting selector';
+            playBtn.tabIndex = 0;
+            playBtn.textContent = '▶ Плеер';
+            playBtn.setAttribute('data-ready', '0');
+
+            // --- Кнопка «Удалить» (справа, опционально) ---
+            var delBtn = null;
+            if (c.show_delete) {
+                delBtn = document.createElement('div');
+                delBtn.className = 'qbit-direct-btn qbit-del-btn qbit-player-btn--waiting selector';
+                delBtn.tabIndex = 0;
+                delBtn.textContent = '🗑 Удалить';
+                delBtn.setAttribute('data-ready', '0');
+            }
+
+            // Порядок: qBittorrent → Плеер → Удалить
             item.appendChild(addBtn);
+            item.appendChild(playBtn);
+            if (delBtn) item.appendChild(delBtn);
 
             // Если торрент уже есть в qB — сразу проверяем прогресс
             if (hash) {
