@@ -13,7 +13,8 @@
     var DEF_CONFIRM = true;
     var DEF_AUTO_CAT_PATH = true;
 
-    var DEF_VIMU_PACKAGE = 'net.gtvbox.videoplayer';
+    var DEF_PLAYER_PACKAGE = '';
+    var DEF_PLAYER_ASK = true;
     var DEF_DELETE_FILES = false;
 
     var DEBUG = false;
@@ -31,8 +32,8 @@
                 Lampa.Noty.show(text);
                 return;
             }
-        } catch (e) {
-            console.warn('[qBittorrent] notify error:', e);
+        } catch (error) {
+            console.warn('[qBittorrent] notify error:', error);
         }
 
         console.log('[qBittorrent]', text);
@@ -42,24 +43,25 @@
         if (DEBUG) notify(text);
     }
 
-    function storeGet(key, def) {
+    function storeGet(key, defaultValue) {
         try {
             if (window.Lampa && Lampa.Storage) {
-                var value = Lampa.Storage.get(key, def);
+                var value = Lampa.Storage.get(key, defaultValue);
 
                 if (value !== undefined && value !== null) {
                     return value;
                 }
             }
-        } catch (e) {}
+        } catch (error) {}
 
-        return def;
+        return defaultValue;
     }
 
-    function isTrue(value, def) {
+    function isTrue(value, defaultValue) {
         if (value === true || value === 'true') return true;
         if (value === false || value === 'false') return false;
-        return def;
+
+        return defaultValue;
     }
 
     function cfg() {
@@ -76,7 +78,11 @@
                 storeGet('qbit_auto_cat_path', DEF_AUTO_CAT_PATH),
                 DEF_AUTO_CAT_PATH
             ),
-            vimu_package: storeGet('qbit_vimu_package', DEF_VIMU_PACKAGE),
+            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
+            player_ask: isTrue(
+                storeGet('qbit_player_ask', DEF_PLAYER_ASK),
+                DEF_PLAYER_ASK
+            ),
             delete_files: isTrue(
                 storeGet('qbit_delete_files', DEF_DELETE_FILES),
                 DEF_DELETE_FILES
@@ -113,7 +119,7 @@
         function drain() {
             try {
                 AndroidJS.getResp();
-            } catch (e) {}
+            } catch (error) {}
         }
 
         function attempt() {
@@ -125,7 +131,7 @@
             if (signature === 0) {
                 try {
                     AndroidJS.httpReq(JSON.stringify(request));
-                } catch (e) {
+                } catch (error) {
                     signature++;
                     attempt();
                     return;
@@ -140,7 +146,7 @@
                             headers: request.headers || {}
                         })
                     );
-                } catch (e) {
+                } catch (error) {
                     callback(null);
                     return;
                 }
@@ -158,7 +164,7 @@
 
                 try {
                     response = AndroidJS.getResp();
-                } catch (e) {}
+                } catch (error) {}
 
                 if (typeof response === 'string' && response.length) {
                     callback(response);
@@ -277,6 +283,7 @@
                     'POST',
                     body
                 );
+
                 return;
             }
 
@@ -293,9 +300,9 @@
             }
 
             if (config.confirm) {
-                confirmAdded(magnet, function (ok) {
+                confirmAdded(magnet, function (added) {
                     notify(
-                        ok
+                        added
                             ? 'Добавлено в qBittorrent ✓'
                             : 'Отправлено в qBittorrent, подтверждение не получено'
                     );
@@ -358,6 +365,7 @@
                     'POST',
                     body
                 );
+
                 return;
             }
 
@@ -402,25 +410,28 @@
         }
     }
 
-    // ================= VIMU PLAYER =================
+    // ================= ВИДЕОПЛЕЕР =================
 
-    function openInVimu(mediaUrl, title) {
+    function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
-            notify('Нет прямой ссылки для ViMu Player');
+            notify('Нет прямой ссылки для видеоплеера');
             return;
         }
 
         if (/^magnet:\?/i.test(mediaUrl)) {
-            notify('ViMu не воспроизводит magnet. Сначала добавь торрент в qBittorrent');
+            notify('Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent');
             return;
         }
 
         if (!/^https?:\/\//i.test(mediaUrl)) {
-            notify('ViMu поддерживает открытие http/https-ссылок');
+            notify('Поддерживаются только http/https-ссылки');
             return;
         }
 
-        var packageName = String(cfg().vimu_package || DEF_VIMU_PACKAGE).trim();
+        var config = cfg();
+        var packageName = String(config.player_package || '').trim();
+        var alwaysAsk = config.player_ask;
+
         var scheme = mediaUrl.match(/^https?/i)[0].toLowerCase();
         var hostPath = mediaUrl.replace(/^https?:\/\//i, '');
 
@@ -429,33 +440,52 @@
             '#Intent;scheme=' + scheme +
             ';action=android.intent.action.VIEW' +
             ';type=video/*' +
-            ';package=' + packageName +
             ';S.title=' + encodeURIComponent(title || '') +
             ';end';
+
+        if (packageName && !alwaysAsk) {
+            intentUri += ';package=' + packageName;
+        }
 
         try {
             if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
                 AndroidJS.openUrl(intentUri);
-                notify('Открываю в ViMu Player');
+
+                notify(
+                    packageName && !alwaysAsk
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
+
                 return;
             }
 
             if (window.Android && typeof Android.openUrl === 'function') {
                 Android.openUrl(intentUri);
-                notify('Открываю в ViMu Player');
+
+                notify(
+                    packageName && !alwaysAsk
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
+
                 return;
             }
 
             var opened = window.open(intentUri, '_blank');
 
             if (opened) {
-                notify('Открываю в ViMu Player');
+                notify(
+                    packageName && !alwaysAsk
+                        ? 'Открываю в выбранном плеере'
+                        : 'Выбери видеоплеер'
+                );
             } else {
-                notify('Не удалось запустить ViMu Player');
+                notify('Не удалось открыть видеоплеер');
             }
         } catch (error) {
-            console.error('[qBittorrent] ViMu open error:', error);
-            notify('Ошибка запуска ViMu Player');
+            console.error('[qBittorrent] player open error:', error);
+            notify('Ошибка запуска видеоплеера');
         }
     }
 
@@ -627,14 +657,27 @@
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: {
-                    name: 'qbit_vimu_package',
+                    name: 'qbit_player_package',
                     type: 'input',
                     values: '',
-                    default: DEF_VIMU_PACKAGE
+                    default: DEF_PLAYER_PACKAGE
                 },
                 field: {
-                    name: 'Пакет ViMu Player',
-                    description: 'net.gtvbox.videoplayer, net.gtvbox.vimuhd или net.gtvbox.vimu'
+                    name: 'Плеер по умолчанию',
+                    description: 'Пакет плеера. Пусто = всегда выбирать из установленных'
+                }
+            });
+
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: {
+                    name: 'qbit_player_ask',
+                    type: 'trigger',
+                    default: DEF_PLAYER_ASK
+                },
+                field: {
+                    name: 'Всегда спрашивать плеер',
+                    description: 'Открывать выбор установленных плееров при каждом нажатии'
                 }
             });
 
@@ -706,41 +749,32 @@
         return button;
     }
 
+    function getStreamUrl(data) {
+        return (
+            data.url ||
+            data.Url ||
+            data.stream_url ||
+            data.StreamUrl ||
+            data.file ||
+            data.File ||
+            ''
+        );
+    }
+
     function initTorrentButton() {
         if (!window.Lampa || !Lampa.Listener) return;
 
         Lampa.Listener.follow('torrent', function (event) {
-            if (
-                !event ||
-                event.type !== 'render' ||
-                !event.item
-            ) {
-                return;
-            }
+            if (!event || event.type !== 'render' || !event.item) return;
 
             var item = event.item.jquery ? event.item[0] : event.item;
             var data = event.element || {};
 
             if (!item || item.querySelector('.qbit-direct-actions')) return;
 
-            var magnet =
-                data.MagnetUri ||
-                data.magnetUri ||
-                '';
-
-            var title =
-                data.Title ||
-                data.title ||
-                '';
-
-            var streamUrl =
-                data.url ||
-                data.Url ||
-                data.stream_url ||
-                data.StreamUrl ||
-                data.file ||
-                data.File ||
-                '';
+            var magnet = data.MagnetUri || data.magnetUri || '';
+            var title = data.Title || data.title || '';
+            var streamUrl = getStreamUrl(data);
 
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
@@ -758,7 +792,7 @@
                 'qbit-direct-play',
                 '▶ Плеер',
                 function () {
-                    openInVimu(streamUrl, title);
+                    openInPlayer(streamUrl, title);
                 }
             );
 
