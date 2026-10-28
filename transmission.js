@@ -22,18 +22,20 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    // Список популярных плееров для Android TV / приставок
-    var PLAYERS = [
-        { title: 'VLC',                  pkg: 'org.videolan.vlc' },
-        { title: 'MX Player',            pkg: 'com.mxtech.videoplayer.ad' },
-        { title: 'Vimu Player',          pkg: 'net.gtvbox.videoplayer' },
-        { title: 'Just (Video) Player',  pkg: 'com.brouken.player' },
-        { title: 'Kodi',                 pkg: 'org.xbmc.kodi' },
-        { title: 'nPlayer',              pkg: 'com.newin.nplayer.pro' },
-        { title: 'Xplayer',              pkg: 'com.xplayer.player' },
-        { title: 'Nova Video Player',    pkg: 'org.courville.nova' },
-        { title: 'Archos Video Player',  pkg: 'com.archos.mediacenter.video' }
-    ];
+    // Список плееров для выпадающего меню
+    var PLAYERS_LIST = {
+        '':        'Не выбран',
+        'org.videolan.vlc': 'VLC',
+        'com.mxtech.videoplayer.ad': 'MX Player',
+        'net.gtvbox.videoplayer': 'Vimu Player',
+        'com.brouken.player': 'Just (Video) Player',
+        'org.xbmc.kodi': 'Kodi',
+        'com.newin.nplayer.pro': 'nPlayer',
+        'com.xplayer.player': 'Xplayer',
+        'org.courville.nova': 'Nova Video Player',
+        'com.archos.mediacenter.video': 'Archos Video Player',
+        'custom': 'Другой (ввести вручную)'
+    };
 
     // ================= УТИЛИТЫ =================
 
@@ -46,7 +48,6 @@
         } catch (error) {
             console.warn('[qBittorrent] notify error:', error);
         }
-
         console.log('[qBittorrent]', text);
     }
 
@@ -58,13 +59,11 @@
         try {
             if (window.Lampa && Lampa.Storage) {
                 var value = Lampa.Storage.get(key, defaultValue);
-
                 if (value !== undefined && value !== null) {
                     return value;
                 }
             }
         } catch (error) {}
-
         return defaultValue;
     }
 
@@ -81,7 +80,6 @@
     function isTrue(value, defaultValue) {
         if (value === true || value === 'true') return true;
         if (value === false || value === 'false') return false;
-
         return defaultValue;
     }
 
@@ -114,17 +112,11 @@
     function joinPath(basePath, subPath) {
         if (!basePath) return subPath || '';
         if (!subPath) return basePath;
-
-        return (
-            String(basePath).replace(/\/+$/, '') +
-            '/' +
-            String(subPath).replace(/^\/+/, '')
-        );
+        return String(basePath).replace(/\/+$/, '') + '/' + String(subPath).replace(/^\/+/, '');
     }
 
     function magnetHash(magnet) {
         var match = /urn:btih:([a-zA-Z0-9]+)/.exec(magnet || '');
-
         return match ? match[1].toLowerCase() : '';
     }
 
@@ -134,9 +126,7 @@
         var signature = 0;
 
         function drain() {
-            try {
-                AndroidJS.getResp();
-            } catch (error) {}
+            try { AndroidJS.getResp(); } catch (error) {}
         }
 
         function attempt() {
@@ -173,27 +163,20 @@
             }
 
             var tries = 0;
-
             (function poll() {
                 tries++;
-
                 var response = null;
-
-                try {
-                    response = AndroidJS.getResp();
-                } catch (error) {}
+                try { response = AndroidJS.getResp(); } catch (error) {}
 
                 if (typeof response === 'string' && response.length) {
                     callback(response);
                     return;
                 }
-
                 if (tries > 20) {
                     signature++;
                     attempt();
                     return;
                 }
-
                 setTimeout(poll, 150);
             })();
         }
@@ -213,14 +196,12 @@
             mode: 'no-cors',
             headers: CT_FORM,
             body: body
-        })
-            .then(function () {
-                notify('Запрос отправлен, но ответ недоступен для проверки');
-            })
-            .catch(function (error) {
-                console.error('[qBittorrent] blind request error:', error);
-                notify('Ошибка отправки запроса в qBittorrent');
-            });
+        }).then(function () {
+            notify('Запрос отправлен, но ответ недоступен для проверки');
+        }).catch(function (error) {
+            console.error('[qBittorrent] blind request error:', error);
+            notify('Ошибка отправки запроса в qBittorrent');
+        });
     }
 
     // ================= QBITTORRENT =================
@@ -228,7 +209,6 @@
     function buildAddBody(magnet, title) {
         var config = cfg();
         var body = 'urls=' + encodeURIComponent(magnet);
-
         var finalSavePath = config.savepath || '';
         var autoTMM = false;
 
@@ -240,46 +220,30 @@
             }
         }
 
-        if (finalSavePath) {
-            body += '&savepath=' + encodeURIComponent(finalSavePath);
-        }
-
-        if (config.category) {
-            body += '&category=' + encodeURIComponent(config.category);
-        }
-
-        if (config.rename && title) {
-            body += '&rename=' + encodeURIComponent(title);
-        }
+        if (finalSavePath) body += '&savepath=' + encodeURIComponent(finalSavePath);
+        if (config.category) body += '&category=' + encodeURIComponent(config.category);
+        if (config.rename && title) body += '&rename=' + encodeURIComponent(title);
 
         body += '&paused=false&stopped=false';
         body += '&autoTMM=' + (autoTMM ? 'true' : 'false');
 
         console.log('[qBittorrent] add body:', body);
-
         return body;
     }
 
     function confirmAdded(magnet, callback) {
         var hash = magnetHash(magnet);
-
         if (!hash) {
             callback(false);
             return;
         }
 
-        nativeRequest(
-            {
-                url: base() + '/api/v2/torrents/info?hashes=' + hash,
-                method: 'GET'
-            },
-            function (response) {
-                callback(
-                    typeof response === 'string' &&
-                        response.toLowerCase().indexOf(hash) !== -1
-                );
-            }
-        );
+        nativeRequest({
+            url: base() + '/api/v2/torrents/info?hashes=' + hash,
+            method: 'GET'
+        }, function (response) {
+            callback(typeof response === 'string' && response.toLowerCase().indexOf(hash) !== -1);
+        });
     }
 
     function qbAdd(magnet, title) {
@@ -290,17 +254,11 @@
 
         var config = cfg();
         var body = buildAddBody(magnet, title);
-
         debugNotify('Отправляю в qBittorrent...');
 
         function finishAdd(response) {
             if (response === null || response === undefined) {
-                blindRequest(
-                    base() + '/api/v2/torrents/add',
-                    'POST',
-                    body
-                );
-
+                blindRequest(base() + '/api/v2/torrents/add', 'POST', body);
                 return;
             }
 
@@ -310,7 +268,6 @@
                 notify('qBittorrent: 403. Проверь доступ к Web UI');
                 return;
             }
-
             if (/Fails/i.test(response)) {
                 notify('qBittorrent: ошибка добавления');
                 return;
@@ -318,11 +275,7 @@
 
             if (config.confirm) {
                 confirmAdded(magnet, function (added) {
-                    notify(
-                        added
-                            ? 'Добавлено в qBittorrent ✓'
-                            : 'Отправлено в qBittorrent, подтверждение не получено'
-                    );
+                    notify(added ? 'Добавлено в qBittorrent ✓' : 'Отправлено в qBittorrent, подтверждение не получено');
                 });
             } else {
                 notify('Отправлено в qBittorrent');
@@ -330,29 +283,21 @@
         }
 
         function addRequest() {
-            nativeRequest(
-                {
-                    url: base() + '/api/v2/torrents/add',
-                    method: 'POST',
-                    body: body,
-                    headers: CT_FORM
-                },
-                finishAdd
-            );
+            nativeRequest({
+                url: base() + '/api/v2/torrents/add',
+                method: 'POST',
+                body: body,
+                headers: CT_FORM
+            }, finishAdd);
         }
 
         if (!config.bypass && config.user) {
-            nativeRequest(
-                {
-                    url: base() + '/api/v2/auth/login',
-                    method: 'POST',
-                    body:
-                        'username=' + encodeURIComponent(config.user) +
-                        '&password=' + encodeURIComponent(config.pass),
-                    headers: CT_FORM
-                },
-                addRequest
-            );
+            nativeRequest({
+                url: base() + '/api/v2/auth/login',
+                method: 'POST',
+                body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
+                headers: CT_FORM
+            }, addRequest);
         } else {
             addRequest();
         }
@@ -360,68 +305,44 @@
 
     function qbDelete(magnet) {
         var hash = magnetHash(magnet);
-
         if (!hash) {
             notify('Не удалось определить hash торрента');
             return;
         }
 
         var config = cfg();
-        var body =
-            'hashes=' + encodeURIComponent(hash) +
-            '&deleteFiles=' + (config.delete_files ? 'true' : 'false');
-
+        var body = 'hashes=' + encodeURIComponent(hash) + '&deleteFiles=' + (config.delete_files ? 'true' : 'false');
         debugNotify('Удаляю торрент из qBittorrent...');
 
         function finishDelete(response) {
             console.log('[qBittorrent] delete response:', response);
-
             if (response === null || response === undefined) {
-                blindRequest(
-                    base() + '/api/v2/torrents/delete',
-                    'POST',
-                    body
-                );
-
+                blindRequest(base() + '/api/v2/torrents/delete', 'POST', body);
                 return;
             }
-
             if (/Forbidden|403/i.test(response)) {
                 notify('qBittorrent: 403. Проверь доступ к Web UI');
                 return;
             }
-
-            notify(
-                config.delete_files
-                    ? 'Торрент и файлы удалены из qBittorrent'
-                    : 'Торрент удалён из qBittorrent'
-            );
+            notify(config.delete_files ? 'Торрент и файлы удалены из qBittorrent' : 'Торрент удалён из qBittorrent');
         }
 
         function deleteRequest() {
-            nativeRequest(
-                {
-                    url: base() + '/api/v2/torrents/delete',
-                    method: 'POST',
-                    body: body,
-                    headers: CT_FORM
-                },
-                finishDelete
-            );
+            nativeRequest({
+                url: base() + '/api/v2/torrents/delete',
+                method: 'POST',
+                body: body,
+                headers: CT_FORM
+            }, finishDelete);
         }
 
         if (!config.bypass && config.user) {
-            nativeRequest(
-                {
-                    url: base() + '/api/v2/auth/login',
-                    method: 'POST',
-                    body:
-                        'username=' + encodeURIComponent(config.user) +
-                        '&password=' + encodeURIComponent(config.pass),
-                    headers: CT_FORM
-                },
-                deleteRequest
-            );
+            nativeRequest({
+                url: base() + '/api/v2/auth/login',
+                method: 'POST',
+                body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
+                headers: CT_FORM
+            }, deleteRequest);
         } else {
             deleteRequest();
         }
@@ -429,62 +350,12 @@
 
     // ================= ВЫБОР И ЗАПУСК ПЛЕЕРА =================
 
-    // Показ списка популярных плееров через Lampa.Select
-    function showPlayerPicker() {
-        if (!window.Lampa || !Lampa.Select) {
-            notify('Интерфейс выбора недоступен');
-            return;
-        }
-
-        var items = PLAYERS.map(function (p) {
-            return { title: p.title, pkg: p.pkg };
-        });
-
-        // Добавляем пункт "Другой (ввести вручную)"
-        items.push({ title: 'Другой (ввести вручную)', pkg: 'custom' });
-
-        var currentPkg = cfg().player_package;
-        var startIndex = 0;
-
-        for (var i = 0; i < items.length; i++) {
-            if (items[i].pkg === currentPkg) {
-                startIndex = i;
-                break;
-            }
-        }
-
-        Lampa.Select.show({
-            title: 'Выберите плеер',
-            items: items,
-            start: startIndex,
-            onSelect: function (item) {
-                if (item.pkg === 'custom') {
-                    // Если выбран "Другой" — просим ввести пакет вручную
-                    var manual = window.prompt('Введите пакет плеера (например, org.videolan.vlc):', currentPkg);
-                    if (manual !== null) {
-                        storeSet('qbit_player_package', manual.trim());
-                        notify('Пакет сохранён: ' + manual.trim());
-                    }
-                } else {
-                    storeSet('qbit_player_package', item.pkg);
-                    notify('Выбран плеер: ' + item.title);
-                }
-                Lampa.Controller.toggle('settings');
-            },
-            onBack: function () {
-                Lampa.Controller.toggle('settings');
-            }
-        });
-    }
-
     // Запуск приложения по пакету через ACTION_MAIN (без видео)
     function launchByPackage(packageName) {
         var pkg = String(packageName || '').trim();
-
         if (!pkg) return false;
 
         debugNotify('Запускаю плеер: ' + pkg);
-
         var intent = {
             action: 'android.intent.action.MAIN',
             category: 'android.intent.category.LAUNCHER',
@@ -492,55 +363,36 @@
         };
 
         try {
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.openPlayer === 'function'
-            ) {
+            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
                 Lampa.Android.openPlayer('', intent);
                 return true;
             }
-
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.startActivity === 'function'
-            ) {
+            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 AndroidJS.startActivity(JSON.stringify(intent));
                 return true;
             }
-
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.openPlayer === 'function'
-            ) {
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer('', pkg, '', '');
                 return true;
             }
-
-            if (
-                window.Android &&
-                typeof Android.openPlayer === 'function'
-            ) {
+            if (window.Android && typeof Android.openPlayer === 'function') {
                 Android.openPlayer('', intent);
                 return true;
             }
         } catch (error) {
             console.error('[qBittorrent] player launch error:', error);
         }
-
         return false;
     }
 
     // Обработчик кнопки «▶ Открыть плеер» в карточке
     function handlePlayerButton() {
         var config = cfg();
-
-        if (config.player_package) {
+        if (config.player_package && config.player_package !== 'custom') {
             if (launchByPackage(config.player_package)) {
                 notify('Запускаю плеер');
                 return;
             }
-
             notify('Плеер не найден, проверьте пакет');
             storeSet('qbit_player_package', '');
         } else {
@@ -552,26 +404,17 @@
 
     function bindPress(element, handler) {
         var last = 0;
-
         function wrapped(event) {
             var now = Date.now();
-
             if (now - last < ACTION_LOCK_MS) return;
-
             last = now;
-
             if (event) {
                 event.preventDefault();
                 event.stopPropagation();
-
-                if (event.stopImmediatePropagation) {
-                    event.stopImmediatePropagation();
-                }
+                if (event.stopImmediatePropagation) event.stopImmediatePropagation();
             }
-
             handler(event);
         }
-
         element.addEventListener('hover:enter', wrapped);
         element.addEventListener('click', wrapped);
     }
@@ -587,8 +430,7 @@
 
             Lampa.SettingsApi.addComponent({
                 component: 'qbit_direct',
-                icon:
-                    '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
+                icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
                 name: 'qBittorrent'
             });
 
@@ -652,26 +494,19 @@
                 field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
             });
 
-            // Кнопка выбора плеера из готового списка
+            // ИСПОЛЬЗУЕМ TYPE: SELECT вместо BUTTON
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
-                param: { name: 'qbit_player_select_btn', type: 'button', default: '' },
-                field: {
-                    name: 'Выбрать плеер из списка',
-                    description: 'Открыть список популярных Android-плееров',
-                    onRender: function (item) {
-                        item.on('hover:enter', function () {
-                            showPlayerPicker();
-                        });
-                    }
+                param: { 
+                    name: 'qbit_player_package', 
+                    type: 'select', 
+                    values: PLAYERS_LIST, 
+                    default: '' 
+                },
+                field: { 
+                    name: 'Видеоплеер', 
+                    description: 'Выберите плеер из списка для кнопки «Открыть плеер»' 
                 }
-            });
-
-            // Текстовое поле для отображения/ручного ввода пакета
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_player_package', type: 'input', values: '', default: DEF_PLAYER_PACKAGE },
-                field: { name: 'Текущий пакет плеера', description: 'Заполняется автоматически. Можно ввести вручную.' }
             });
 
             console.log('[qBittorrent] Настройки зарегистрированы');
@@ -694,7 +529,6 @@
 
             Lampa.Menu.addButton(icon, 'qBittorrent', function () {
                 Lampa.Controller.toggle('settings');
-
                 setTimeout(function () {
                     var item = document.querySelector('[data-component="qbit_direct"]');
                     if (item) item.click();
@@ -732,9 +566,7 @@
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title = data.Title || data.title || '';
 
-            if (DEBUG) {
-                console.log('[qBittorrent] torrent card data:', data);
-            }
+            if (DEBUG) console.log('[qBittorrent] torrent card data:', data);
 
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
@@ -765,7 +597,6 @@
     function initializePlugin() {
         try {
             console.log('[qBittorrent] Инициализация плагина...');
-
             registerSettings();
             addMenuItem();
             initTorrentButton();
@@ -783,7 +614,6 @@
                     '.qbit-direct-delete.focus{background:#6b2c2c;}';
                 document.head.appendChild(style);
             }
-
             console.log('[qBittorrent] Плагин загружен');
             notify('qBittorrent: плагин загружен');
         } catch (error) {
