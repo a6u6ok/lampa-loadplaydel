@@ -509,69 +509,55 @@
         return false;
     }
 
-    function openInPlayer(mediaUrl, title) {
-        if (!mediaUrl) {
-            notify('Нет прямой ссылки для видеоплеера');
+    function openInPlayer() {
+    var config = cfg();
+    var packageName = String(config.player_package || '').trim();
 
-            if (DEBUG) {
-                console.log('[qBittorrent] streamUrl отсутствует. title:', title);
-            }
-
-            return;
-        }
-
-        if (/^magnet:\?/i.test(mediaUrl)) {
-            notify('Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent');
-            return;
-        }
-
-        if (!/^https?:\/\//i.test(mediaUrl)) {
-            notify('Поддерживаются только http/https-ссылки');
-            return;
-        }
-
-        var config = cfg();
-        var packageName = String(config.player_package || '').trim();
-
-        debugNotify('Ссылка для плеера: ' + mediaUrl);
-
-        // Режим «всегда спрашивать»: принудительно открываем системный выбор
-        if (config.player_ask || !packageName) {
-            if (openChooser(mediaUrl, title)) return;
-        }
-
-        // Если выбор недоступен, открываем через штатный плеер Lampa
-        if (openFixedPlayer(mediaUrl, title, packageName)) return;
-
-        // Последний вариант: Intent с указанным пакетом
-        if (packageName) {
-            var intentUri = buildPlayerIntent(mediaUrl, title, packageName);
-
-            try {
-                if (
-                    window.AndroidJS &&
-                    typeof AndroidJS.openUrl === 'function'
-                ) {
-                    AndroidJS.openUrl(intentUri);
-                    notify('Открываю в выбранном плеере');
-                    return;
-                }
-
-                if (
-                    window.Android &&
-                    typeof Android.openUrl === 'function'
-                ) {
-                    Android.openUrl(intentUri);
-                    notify('Открываю в выбранном плеере');
-                    return;
-                }
-            } catch (error) {
-                console.error('[qBittorrent] player intent error:', error);
-            }
-        }
-
-        notify('Не удалось открыть видеоплеер');
+    if (!packageName) {
+        notify('Укажи пакет видеоплеера в настройках qBittorrent');
+        return;
     }
+
+    var intentUri =
+        'intent:#Intent' +
+        ';action=android.intent.action.MAIN' +
+        ';category=android.intent.category.LAUNCHER' +
+        ';package=' + packageName +
+        ';end';
+
+    debugNotify('Запускаю плеер: ' + packageName);
+
+    try {
+        if (
+            window.AndroidJS &&
+            typeof AndroidJS.openUrl === 'function'
+        ) {
+            AndroidJS.openUrl(intentUri);
+            notify('Запускаю видеоплеер');
+            return;
+        }
+
+        if (
+            window.Android &&
+            typeof Android.openUrl === 'function'
+        ) {
+            Android.openUrl(intentUri);
+            notify('Запускаю видеоплеер');
+            return;
+        }
+
+        var opened = window.open(intentUri, '_blank');
+
+        if (opened) {
+            notify('Запускаю видеоплеер');
+        } else {
+            notify('Не удалось запустить видеоплеер');
+        }
+    } catch (error) {
+        console.error('[qBittorrent] player launch error:', error);
+        notify('Ошибка запуска видеоплеера');
+    }
+}
 
     // ================= НАЖАТИЯ =================
 
