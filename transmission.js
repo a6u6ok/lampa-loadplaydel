@@ -412,60 +412,192 @@
 
     // ================= ВИДЕОПЛЕЕР =================
 
-    function buildPlayerIntent(mediaUrl, title, packageName) {
-        var intent =
-            'intent:#Intent' +
-            ';action=android.intent.action.VIEW' +
-            ';data=' + encodeURIComponent(mediaUrl) +
-            ';type=video/*' +
-            ';S.title=' + encodeURIComponent(title || '') +
-            ';end';
+    // Получить список установленных плееров (пакет + название)
+    function getInstalledPlayers(callback) {
+        function finish(list) {
+            var result = [];
 
-        if (packageName) {
-            intent = intent.replace(';end', ';package=' + packageName + ';end');
+            if (Array.isArray(list)) {
+                list.forEach(function (p) {
+                    if (!p) return;
+
+                    if (typeof p === 'string') {
+                        result.push({ package: p, name: p });
+                    } else {
+                        var pkg = p.package || p.Package || p.id || p.Id || '';
+                        var nm = p.name || p.Name || p.label || p.Label || pkg;
+
+                        if (pkg) result.push({ package: pkg, name: nm });
+                    }
+                });
+            }
+
+            callback(result);
         }
-
-        return intent;
-    }
-
-    function openChooser(mediaUrl, title) {
-        var intentUri = buildPlayerIntent(mediaUrl, title, '');
-
-        debugNotify('Intent для выбора плеера: ' + intentUri);
 
         try {
             if (
-                window.AndroidJS &&
-                typeof AndroidJS.openUrl === 'function'
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.getPlayers === 'function'
             ) {
-                AndroidJS.openUrl(intentUri);
-                notify('Выбери видеоплеер');
-                return true;
+                Lampa.Android.getPlayers(function (players) {
+                    finish(players);
+                });
+                return;
             }
 
-            if (
-                window.Android &&
-                typeof Android.openUrl === 'function'
-            ) {
-                Android.openUrl(intentUri);
-                notify('Выбери видеоплеер');
-                return true;
+            if (window.AndroidJS && typeof AndroidJS.getPlayers === 'function') {
+                var raw = AndroidJS.getPlayers();
+                var parsed = null;
+
+                try {
+                    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                } catch (e) {}
+
+                finish(parsed);
+                return;
             }
 
-            var opened = window.open(intentUri, '_blank');
-
-            if (opened) {
-                notify('Выбери видеоплеер');
-                return true;
+            if (window.Android && typeof Android.getPlayers === 'function') {
+                Android.getPlayers(function (players) {
+                    finish(players);
+                });
+                return;
             }
         } catch (error) {
-            console.error('[qBittorrent] chooser error:', error);
+            console.error('[qBittorrent] getPlayers error:', error);
         }
 
-        return false;
+        finish([]);
     }
 
-    function openFixedPlayer(mediaUrl, title, packageName) {
+    function savePlayerPackage(pkg) {
+        try {
+            if (window.Lampa && Lampa.Storage) {
+                Lampa.Storage.set('qbit_player_package', pkg || '');
+            }
+        } catch (error) {
+            console.error('[qBittorrent] save player error:', error);
+        }
+    }
+
+    function showPlayerPicker() {
+        var config = cfg();
+
+        getInstalledPlayers(function (players) {
+            if (!players.length) {
+                var manual = window.prompt(
+                    'Пакет плеера (например, org.videolan.vlc). Пусто = системный выбор',
+                    config.player_package || ''
+                );
+
+                if (manual !== null) {
+                    savePlayerPackage(manual.trim());
+                    notify(manual.trim() ? 'Плеер сохранён' : 'Плеер сброшен');
+                }
+                return;
+            }
+
+            var items = players.map(function (p) {
+                return {
+                    title: p.name,
+                    package: p.package
+                };
+            });
+
+            items.unshift({
+                title: 'Системный выбор (спрашивать всегда)',
+                package: ''
+            });
+
+            var current = -1;
+
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].package === (config.player_package || '')) {
+                    current = i;
+                    break;
+                }
+            }
+
+            try {
+                if (window.Lampa && Lampa.Select) {
+                    Lampa.Select.show({
+                        title: 'Выбор плеера',
+                        items: items,
+                        start: current >= 0 ? current : 0,
+                        onSelect: function (item) {
+                            savePlayerPackage(item.package);
+                            notify(
+                                item.package
+                                    ? 'Плеер: ' + item.title
+                                    : 'Плеер: системный выбор'
+                            );
+
+                            try {
+                                Lampa.Controller.toggle('content');
+                            } catch (e) {}
+                        },
+                        onBack: function () {
+                            try {
+                                Lampa.Controller.toggle('content');
+                            } catch (e) {}
+                        }
+                    });
+                    return;
+                }
+            } catch (error) {
+                console.error('[qBittorrent] Select error:', error);
+            }
+
+            var listText = items
+                .map(function (i, idx) {
+                    return (
+                        idx +
+                        1 +
+                        '. ' +
+                        i.title +
+                        (i.package ? ' (' + i.package + ')' : '')
+                    );
+                })
+                .join('\n');
+
+            var answer = window.prompt(
+                'Выберите плеер (номер):\n' + listText,
+                String((current >= 0 ? current : 0) + 1)
+            );
+
+            var num = parseInt(answer, 10);
+
+            if (!isNaN(num) && num >= 1 && num <= items.length) {
+                var chosen = items[num - 1];
+                savePlayerPackage(chosen.package);
+                notify('Плеер: ' + chosen.title);
+            }
+        });
+    }
+
+    function openInPlayer(mediaUrl, title) {
+        if (!mediaUrl) {
+            debugNotify('Ссылки нет — открываю выбор плеера');
+            showPlayerPicker();
+            return;
+        }
+
+        if (/^magnet:\?/i.test(mediaUrl)) {
+            notify(
+                'Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent'
+            );
+            return;
+        }
+
+        if (!/^https?:\/\//i.test(mediaUrl)) {
+            notify('Поддерживаются только http/https-ссылки');
+            return;
+        }
+
+        var config = cfg();
+
         var playerData = {
             url: mediaUrl,
             title: title || '',
@@ -474,6 +606,13 @@
             }
         };
 
+        if (config.player_package && !config.player_ask) {
+            playerData.package = config.player_package;
+            playerData.packageName = config.player_package;
+        }
+
+        debugNotify('Открываю ссылку в плеере: ' + mediaUrl);
+
         try {
             if (
                 window.Lampa &&
@@ -481,83 +620,25 @@
                 typeof Lampa.Android.openPlayer === 'function'
             ) {
                 Lampa.Android.openPlayer(mediaUrl, playerData);
-                notify('Открываю в выбранном плеере');
-                return true;
+                return;
             }
 
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.openPlayer === 'function'
-            ) {
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer(mediaUrl, JSON.stringify(playerData));
-                notify('Открываю в выбранном плеере');
-                return true;
+                return;
             }
 
-            if (
-                window.Android &&
-                typeof Android.openPlayer === 'function'
-            ) {
+            if (window.Android && typeof Android.openPlayer === 'function') {
                 Android.openPlayer(mediaUrl, playerData);
-                notify('Открываю в выбранном плеере');
-                return true;
+                return;
             }
+
+            notify('Android-мост плеера недоступен в этой сборке Lampa');
         } catch (error) {
-            console.error('[qBittorrent] fixed player error:', error);
+            console.error('[qBittorrent] player open error:', error);
+            notify('Ошибка запуска видеоплеера');
         }
-
-        return false;
     }
-
-    function openInPlayer() {
-    var config = cfg();
-    var packageName = String(config.player_package || '').trim();
-
-    if (!packageName) {
-        notify('Укажи пакет видеоплеера в настройках qBittorrent');
-        return;
-    }
-
-    var intentUri =
-        'intent:#Intent' +
-        ';action=android.intent.action.MAIN' +
-        ';category=android.intent.category.LAUNCHER' +
-        ';package=' + packageName +
-        ';end';
-
-    debugNotify('Запускаю плеер: ' + packageName);
-
-    try {
-        if (
-            window.AndroidJS &&
-            typeof AndroidJS.openUrl === 'function'
-        ) {
-            AndroidJS.openUrl(intentUri);
-            notify('Запускаю видеоплеер');
-            return;
-        }
-
-        if (
-            window.Android &&
-            typeof Android.openUrl === 'function'
-        ) {
-            Android.openUrl(intentUri);
-            notify('Запускаю видеоплеер');
-            return;
-        }
-
-        var opened = window.open(intentUri, '_blank');
-
-        if (opened) {
-            notify('Запускаю видеоплеер');
-        } else {
-            notify('Не удалось запустить видеоплеер');
-        }
-    } catch (error) {
-        console.error('[qBittorrent] player launch error:', error);
-        notify('Ошибка запуска видеоплеера');
-    }
-}
 
     // ================= НАЖАТИЯ =================
 
@@ -598,7 +679,8 @@
 
             Lampa.SettingsApi.addComponent({
                 component: 'qbit_direct',
-                icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
+                icon:
+                    '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
                 name: 'qBittorrent'
             });
 
@@ -612,7 +694,8 @@
                 },
                 field: {
                     name: 'Адрес сервера',
-                    description: 'Адрес Web UI qBittorrent, например http://192.168.1.50:8080'
+                    description:
+                        'Адрес Web UI qBittorrent, например http://192.168.1.50:8080'
                 }
             });
 
@@ -626,7 +709,8 @@
                 },
                 field: {
                     name: 'Логин',
-                    description: 'Логин, если не используется обход аутентификации'
+                    description:
+                        'Логин, если не используется обход аутентификации'
                 }
             });
 
@@ -640,7 +724,8 @@
                 },
                 field: {
                     name: 'Пароль',
-                    description: 'Пароль, если не используется обход аутентификации'
+                    description:
+                        'Пароль, если не используется обход аутентификации'
                 }
             });
 
@@ -653,7 +738,8 @@
                 },
                 field: {
                     name: 'Обход аутентификации',
-                    description: 'Включи обход аутентификации для локальной сети в qBittorrent'
+                    description:
+                        'Включи обход аутентификации для локальной сети в qBittorrent'
                 }
             });
 
@@ -667,7 +753,8 @@
                 },
                 field: {
                     name: 'Базовый путь сохранения',
-                    description: 'Например: /app/qBittorrent. Пусто = путь qBittorrent по умолчанию'
+                    description:
+                        'Например: /app/qBittorrent. Пусто = путь qBittorrent по умолчанию'
                 }
             });
 
@@ -694,7 +781,8 @@
                 },
                 field: {
                     name: 'Добавлять категорию к пути',
-                    description: 'Например: /app/qBittorrent + video = /app/qBittorrent/video'
+                    description:
+                        'Например: /app/qBittorrent + video = /app/qBittorrent/video'
                 }
             });
 
@@ -707,7 +795,8 @@
                 },
                 field: {
                     name: 'Переименовывать торрент',
-                    description: 'Использовать название раздачи как имя торрента'
+                    description:
+                        'Использовать название раздачи как имя торрента'
                 }
             });
 
@@ -720,7 +809,27 @@
                 },
                 field: {
                     name: 'Проверять добавление',
-                    description: 'Проверять, появился ли торрент в qBittorrent'
+                    description:
+                        'Проверять, появился ли торрент в qBittorrent'
+                }
+            });
+
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: {
+                    name: 'qbit_player_select',
+                    type: 'button',
+                    default: ''
+                },
+                field: {
+                    name: 'Выбрать установленный плеер',
+                    description:
+                        'Открыть список плееров, установленных на устройстве',
+                    onRender: function (item) {
+                        item.on('hover:enter', function () {
+                            showPlayerPicker();
+                        });
+                    }
                 }
             });
 
@@ -734,7 +843,8 @@
                 },
                 field: {
                     name: 'Плеер по умолчанию',
-                    description: 'Пакет плеера. Пусто = системный выбор плеера'
+                    description:
+                        'Пакет плеера. Пусто = системный выбор плеера'
                 }
             });
 
@@ -747,7 +857,8 @@
                 },
                 field: {
                     name: 'Всегда спрашивать плеер',
-                    description: 'Открывать выбор установленных плееров при каждом нажатии'
+                    description:
+                        'Открывать выбор установленных плееров при каждом нажатии'
                 }
             });
 
@@ -760,7 +871,8 @@
                 },
                 field: {
                     name: 'Удалять файлы торрента',
-                    description: 'При удалении также удалять скачанные файлы на сервере'
+                    description:
+                        'При удалении также удалять скачанные файлы на сервере'
                 }
             });
 
@@ -801,7 +913,10 @@
 
             console.log('[qBittorrent] Пункт меню добавлен');
         } catch (error) {
-            console.error('[qBittorrent] Ошибка добавления пункта меню:', error);
+            console.error(
+                '[qBittorrent] Ошибка добавления пункта меню:',
+                error
+            );
         }
     }
 
@@ -866,7 +981,11 @@
                 'qbit-direct-play',
                 '▶ Плеер',
                 function () {
-                    openInPlayer(streamUrl, title);
+                    if (streamUrl) {
+                        openInPlayer(streamUrl, title);
+                    } else {
+                        showPlayerPicker();
+                    }
                 }
             );
 
@@ -905,7 +1024,6 @@
                     'display:inline-flex;align-items:center;' +
                     'position:relative;z-index:999;' +
                     '}' +
-
                     '.qbit-direct-btn{' +
                     'display:inline-flex;align-items:center;' +
                     'justify-content:center;margin:8px;' +
@@ -914,23 +1032,18 @@
                     'border-radius:6px;font-size:18px;' +
                     'white-space:nowrap;' +
                     '}' +
-
                     '.qbit-direct-btn.focus{' +
                     'border-color:white;background:#51595c;' +
                     '}' +
-
                     '.qbit-direct-play{' +
                     'background:#1f4b3a;border-color:#3fae7a;' +
                     '}' +
-
                     '.qbit-direct-delete{' +
                     'background:#4b2323;border-color:#ae3f3f;' +
                     '}' +
-
                     '.qbit-direct-play.focus{' +
                     'background:#2c6b51;' +
                     '}' +
-
                     '.qbit-direct-delete.focus{' +
                     'background:#6b2c2c;' +
                     '}';
