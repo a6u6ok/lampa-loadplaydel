@@ -19,29 +19,13 @@
     var DEF_CONFIRM = true;
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
-    var DEF_PLAYER_PACKAGE = '';
+    var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
-    };
-
-    // Список плееров
-    var PLAYERS_LIST = {
-        '': 'Не выбран',
-        'top.rootu.dddplayer': 'DDD Video Player',
-        'org.videolan.vlc': 'VLC',
-        'com.mxtech.videoplayer.ad': 'MX Player',
-        'net.gtvbox.videoplayer': 'Vimu Player',
-        'com.brouken.player': 'Just (Video) Player',
-        'org.xbmc.kodi': 'Kodi',
-        'com.newin.nplayer.pro': 'nPlayer',
-        'com.xplayer.player': 'Xplayer',
-        'org.courville.nova': 'Nova Video Player',
-        'com.archos.mediacenter.video': 'Archos Video Player',
-        'custom': 'Другой (ввести вручную)'
     };
 
     // ================= УТИЛИТЫ =================
@@ -108,7 +92,7 @@
                 storeGet('qbit_delete_files', DEF_DELETE_FILES),
                 DEF_DELETE_FILES
             ),
-            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE)
+            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE)
         };
     }
 
@@ -355,48 +339,41 @@
         }
     }
 
-    // ================= ЗАПУСК ПЛЕЕРА =================
+    // ================= СИСТЕМНОЕ МЕНЮ "ПОДЕЛИТЬСЯ" =================
 
-    // Запускает приложение-плеер по его пакету через системный интент.
-    // Никаких видеофайлов и пустых URL не передается.
-    function launchPlayerApp(packageName) {
-        var pkg = String(packageName || '').trim();
+    function shareToPlayer() {
+        var config = cfg();
+        var uri = String(config.smb_file || '').trim();
 
-        if (!pkg) {
-            notify('Плеер не выбран в настройках');
+        if (!uri) {
+            notify('Укажите SMB-путь к файлу в настройках qBittorrent');
             return;
         }
 
-        debugNotify('Запускаю приложение плеера: ' + pkg);
+        debugNotify('Открываю системное меню "Поделиться" для: ' + uri);
 
-        // Используем только AndroidJS.startActivity с ACTION_MAIN,
-        // чтобы избежать проверок URL внутри Lampa и просто открыть приложение.
+        // Пытаемся использовать системный Chooser (меню выбора приложения)
         try {
-            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                var intent = {
-                    action: 'android.intent.action.MAIN',
-                    category: 'android.intent.category.LAUNCHER',
-                    package: pkg
-                };
-                AndroidJS.startActivity(JSON.stringify(intent));
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
+                // Передаем SMB-путь без указания пакета.
+                // Lampa вызовет ACTION_VIEW, Android покажет список плееров.
+                AndroidJS.openPlayer(uri, '', '', 'video/*');
                 return;
             }
         } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
+            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
         }
 
-        notify('Не удалось запустить плеер (startActivity недоступен)');
-    }
-
-    function handlePlayerButton() {
-        var config = cfg();
-
-        if (!config.player_package || config.player_package === 'custom') {
-            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
-            return;
+        try {
+            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
+                Lampa.Android.openPlayer(uri, { title: '' });
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
         }
 
-        launchPlayerApp(config.player_package);
+        notify('Не удалось открыть системное меню');
     }
 
     // ================= НАЖАТИЯ =================
@@ -493,17 +470,13 @@
                 field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
             });
 
+            // Настройка SMB-пути для кнопки "Поделиться"
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
-                param: {
-                    name: 'qbit_player_package',
-                    type: 'select',
-                    values: PLAYERS_LIST,
-                    default: ''
-                },
+                param: { name: 'qbit_smb_file', type: 'input', values: '', default: DEF_SMB_FILE },
                 field: {
-                    name: 'Видеоплеер',
-                    description: 'Выберите плеер из списка для кнопки «Открыть плеер»'
+                    name: 'SMB-путь к файлу',
+                    description: 'Например: smb://192.168.1.50/Media/Movie.mkv'
                 }
             });
 
@@ -574,8 +547,9 @@
                 qbAdd(magnet, title);
             });
 
-            var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
-                handlePlayerButton();
+            // Кнопка "Поделиться" вместо "Открыть плеер"
+            var shareButton = createButton('qbit-direct-share', '📤 Поделиться', function () {
+                shareToPlayer();
             });
 
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
@@ -583,7 +557,7 @@
             });
 
             actions.appendChild(addButton);
-            actions.appendChild(playerButton);
+            actions.appendChild(shareButton);
             actions.appendChild(deleteButton);
 
             item.appendChild(actions);
@@ -606,8 +580,8 @@
                     '.qbit-direct-actions{display:inline-flex;align-items:center;position:relative;z-index:999;flex-wrap:wrap;}' +
                     '.qbit-direct-btn{display:inline-flex;align-items:center;justify-content:center;margin:8px;padding:10px 18px;background:#303638;color:white;border:2px solid #888;border-radius:6px;font-size:18px;white-space:nowrap;}' +
                     '.qbit-direct-btn.focus{border-color:white;background:#51595c;}' +
-                    '.qbit-direct-player{background:#1f4b3a;border-color:#3fae7a;}' +
-                    '.qbit-direct-player.focus{background:#2c6b51;}' +
+                    '.qbit-direct-share{background:#2a4b6a;border-color:#4a8ae0;}' +
+                    '.qbit-direct-share.focus{background:#3a6b9a;}' +
                     '.qbit-direct-delete{background:#4b2323;border-color:#ae3f3f;}' +
                     '.qbit-direct-delete.focus{background:#6b2c2c;}';
                 document.head.appendChild(style);
