@@ -412,152 +412,198 @@
 
     // ================= ВИДЕОПЛЕЕР =================
     //
-    // ВАЖНО: рабочая сигнатура в вашей сборке Lampa:
-    //   AndroidJS.openPlayer(uri, package, title, mime)
+    // Задача: показать системный селектор плееров БЕЗ запуска видео.
     //
-    // Если package === '' — Android показывает системный селектор
-    // установленных плееров (то, что нужно).
+    // Способы (по приоритету):
+    //   1) AndroidJS.pickActivity / startActivityForResult с PICK_ACTIVITY
+    //      -> Android показывает список, НЕ запускает приложение,
+    //         запоминает выбор системой.
+    //   2) AndroidJS.startActivity с ACTION_VIEW и реальным тестовым
+    //      URL, package='' -> Android покажет селектор, и при выборе
+    //      плеер начнёт воспроизводить тестовое видео. Если нужно
+    //      именно "только выбор без воспроизведения" — этот способ
+    //      не идеален, но он единственный, который гарантированно
+    //      работает в WebView без прав.
+    //   3) openPlayer с пустым пакетом.
 
-    function playerIntent(fileUri, title) {
-        var c = cfg();
-        var pkg = c.player_package || '';
-        var mime = 'video/*';
-        var uri = fileUri;
+    var TEST_VIDEO_URL =
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
 
-        // 1) Основной способ — рабочий вызов с 4 аргументами
+    function buildViewIntent(uri, pkg, title) {
+        var intent = {
+            action: 'android.intent.action.VIEW',
+            data: uri,
+            type: 'video/*',
+            package: pkg || '',
+            extra: {
+                'android.intent.extra.TITLE': title || ''
+            }
+        };
+        return intent;
+    }
+
+    // Способ 1: PICK_ACTIVITY (правильный, без запуска)
+    function pickPlayerViaPickActivity() {
+        var innerIntent = buildViewIntent(TEST_VIDEO_URL, '', 'Выбор плеера');
+
+        var pickIntent = {
+            action: 'android.intent.action.PICK_ACTIVITY',
+            extra: {
+                'android.intent.extra.INTENT': innerIntent
+            }
+        };
+
         try {
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(uri, pkg, title || '', mime);
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivityForResult === 'function'
+            ) {
+                AndroidJS.startActivityForResult(JSON.stringify(pickIntent));
                 return true;
             }
         } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
+            console.warn('[qBittorrent] startActivityForResult failed:', e);
         }
 
-        // 2) Запасной — AndroidJS.startActivity с Intent
         try {
-            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: mime,
-                    package: pkg,
-                    extra: { 'android.intent.extra.TITLE': title || '' }
-                }));
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                AndroidJS.startActivity(JSON.stringify(pickIntent));
                 return true;
             }
         } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
+            console.warn('[qBittorrent] startActivity(PICK) failed:', e);
         }
 
-        // 3) Последний резерв — intent:// через location.href
+        return false;
+    }
+
+    // Способ 2: VIEW с пустым package (показывает селектор)
+    function pickPlayerViaView() {
+        var intent = buildViewIntent(TEST_VIDEO_URL, '', 'Выбор плеера');
+
         try {
-            var intent =
-                'intent:' + uri +
-                '#Intent;action=android.intent.action.VIEW;type=' +
-                mime + ';';
-            if (pkg) intent += 'package=' + pkg + ';';
-            intent += 'end';
-            window.location.href = intent;
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                AndroidJS.startActivity(JSON.stringify(intent));
+                return true;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] startActivity(VIEW) failed:', e);
+        }
+
+        // Резерв — через openPlayer с пустым пакетом
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(TEST_VIDEO_URL, '', 'Выбор плеера', 'video/*');
+                return true;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] openPlayer failed:', e);
+        }
+
+        // Совсем последний резерв — intent:// через location.href
+        try {
+            var href =
+                'intent:' + TEST_VIDEO_URL +
+                '#Intent;action=android.intent.action.VIEW;type=video/*;' +
+                'end';
+            window.location.href = href;
             return true;
         } catch (e) {
             console.warn('[qBittorrent] intent:// failed:', e);
         }
 
-        notify('Не удалось запустить плеер');
         return false;
     }
 
-    // Системный селектор плееров = вызов openPlayer с пустым package.
-    // Используем реальный тестовый URL, чтобы Android распознал intent как видео.
     function showSystemPlayerPicker() {
-        var testUrl =
-            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
-
         debugNotify('Открываю системный выбор плеера...');
 
-        var ok = playerIntent(testUrl, 'Выбор плеера');
-
-        if (ok) {
+        if (pickPlayerViaPickActivity()) {
             notify('Выберите плеер из списка');
+            return;
         }
+
+        if (pickPlayerViaView()) {
+            notify('Выберите плеер из списка');
+            return;
+        }
+
+        notify('Не удалось открыть выбор плеера');
     }
 
+    // Открытие реального видео в выбранном/системном плеере
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
-            // Нет прямой ссылки — открываем системный селектор
             showSystemPlayerPicker();
             return;
         }
 
         if (/^magnet:\?/i.test(mediaUrl)) {
-            notify('Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent');
+            notify(
+                'Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent'
+            );
             return;
         }
 
-        if (!/^https?:\/\//i.test(mediaUrl) && !/^(smb|file|content):\/\//i.test(mediaUrl)) {
+        if (
+            !/^https?:\/\//i.test(mediaUrl) &&
+            !/^(smb|file|content):\/\//i.test(mediaUrl)
+        ) {
             notify('Поддерживаются http/https/smb/file-ссылки');
             return;
         }
 
         var config = cfg();
+        var pkg = config.player_ask ? '' : config.player_package || '';
 
-        // Если включено «всегда спрашивать плеер» — сбрасываем пакет,
-        // чтобы Android показал системный селектор.
-        if (config.player_ask) {
-            var savedPkg = config.player_package;
-            // Временно подменяем пакет на пустой — это вызовет селектор
-            // (передаём пустой package в playerIntent через локальную переменную)
-            openWithPkg('', mediaUrl, title);
+        var intent = buildViewIntent(mediaUrl, pkg, title || '');
+
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(mediaUrl, pkg, title || '', 'video/*');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] openPlayer failed:', e);
+        }
+
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                AndroidJS.startActivity(JSON.stringify(intent));
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] startActivity failed:', e);
+        }
+
+        try {
+            var href =
+                'intent:' + mediaUrl +
+                '#Intent;action=android.intent.action.VIEW;type=video/*;';
+            if (pkg) href += 'package=' + pkg + ';';
+            href += 'end';
+            window.location.href = href;
             return;
-        }
-
-        openWithPkg(config.player_package || '', mediaUrl, title);
-    }
-
-    // Вспомогательная функция — вызов плеера с явным пакетом
-    function openWithPkg(pkg, uri, title) {
-        var mime = 'video/*';
-
-        try {
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(uri, pkg || '', title || '', mime);
-                return true;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
-        }
-
-        try {
-            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: mime,
-                    package: pkg || '',
-                    extra: { 'android.intent.extra.TITLE': title || '' }
-                }));
-                return true;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
-        }
-
-        try {
-            var intent =
-                'intent:' + uri +
-                '#Intent;action=android.intent.action.VIEW;type=' +
-                mime + ';';
-            if (pkg) intent += 'package=' + pkg + ';';
-            intent += 'end';
-            window.location.href = intent;
-            return true;
         } catch (e) {
             console.warn('[qBittorrent] intent:// failed:', e);
         }
 
         notify('Не удалось запустить плеер');
-        return false;
     }
 
     // ================= НАЖАТИЯ =================
@@ -629,7 +675,8 @@
                 },
                 field: {
                     name: 'Логин',
-                    description: 'Логин, если не используется обход аутентификации'
+                    description:
+                        'Логин, если не используется обход аутентификации'
                 }
             });
 
@@ -643,7 +690,8 @@
                 },
                 field: {
                     name: 'Пароль',
-                    description: 'Пароль, если не используется обход аутентификации'
+                    description:
+                        'Пароль, если не используется обход аутентификации'
                 }
             });
 
@@ -727,7 +775,8 @@
                 },
                 field: {
                     name: 'Проверять добавление',
-                    description: 'Проверять, появился ли торрент в qBittorrent'
+                    description:
+                        'Проверять, появился ли торрент в qBittorrent'
                 }
             });
 
