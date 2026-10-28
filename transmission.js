@@ -14,6 +14,7 @@
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
+    var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -22,7 +23,7 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    // Список плееров для выпадающего меню
+    // Список плееров
     var PLAYERS_LIST = {
         '': 'Не выбран',
         'top.rootu.dddplayer': 'DDD Video Player',
@@ -102,7 +103,8 @@
                 storeGet('qbit_delete_files', DEF_DELETE_FILES),
                 DEF_DELETE_FILES
             ),
-            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE)
+            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
+            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE)
         };
     }
 
@@ -349,56 +351,95 @@
         }
     }
 
-    // ================= ВЫБОР И ЗАПУСК ПЛЕЕРА =================
+    // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    // Запуск приложения по пакету через ACTION_MAIN (без видео)
-    function launchByPackage(packageName) {
-        var pkg = String(packageName || '').trim();
-        if (!pkg) return false;
+    // Открыть конкретный видеофайл (или папку) в выбранном плеере.
+    // Используем ACTION_VIEW с data = URI файла и package = плеер.
+    function openFileInPlayer(fileUri, playerPkg) {
+        var uri = String(fileUri || '').trim();
+        var pkg = String(playerPkg || '').trim();
 
-        debugNotify('Запускаю плеер: ' + pkg);
-        var intent = {
-            action: 'android.intent.action.MAIN',
-            category: 'android.intent.category.LAUNCHER',
-            package: pkg
-        };
-
-        try {
-            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer('', intent);
-                return true;
-            }
-            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                AndroidJS.startActivity(JSON.stringify(intent));
-                return true;
-            }
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer('', pkg, '', '');
-                return true;
-            }
-            if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer('', intent);
-                return true;
-            }
-        } catch (error) {
-            console.error('[qBittorrent] player launch error:', error);
+        if (!uri) {
+            notify('Укажите SMB-путь к файлу в настройках qBittorrent');
+            return;
         }
-        return false;
-    }
 
-    // Обработчик кнопки «▶ Открыть плеер» в карточке
-    function handlePlayerButton() {
-        var config = cfg();
-        if (config.player_package && config.player_package !== 'custom') {
-            if (launchByPackage(config.player_package)) {
-                notify('Запускаю плеер');
+        debugNotify('Открываю файл в плеере: ' + uri + ' (' + (pkg || 'системный выбор') + ')');
+
+        // 1) Lampa.Android.openPlayer — основной путь
+        try {
+            if (
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function'
+            ) {
+                Lampa.Android.openPlayer(uri, {
+                    package: pkg,
+                    title: ''
+                });
                 return;
             }
-            notify('Плеер не найден, проверьте пакет');
-            storeSet('qbit_player_package', '');
-        } else {
-            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
+        } catch (e) {
+            console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
         }
+
+        // 2) AndroidJS.openPlayer(uri, pkg, title, mime)
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(uri, pkg, '', 'video/*');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
+        }
+
+        // 3) AndroidJS.startActivity с ACTION_VIEW + package
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                var intent = {
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: 'video/*',
+                    package: pkg
+                };
+                AndroidJS.startActivity(JSON.stringify(intent));
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
+        }
+
+        // 4) Android.openPlayer (старый интерфейс)
+        try {
+            if (window.Android && typeof Android.openPlayer === 'function') {
+                Android.openPlayer(uri, {
+                    package: pkg,
+                    title: ''
+                });
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] Android.openPlayer failed:', e);
+        }
+
+        notify('Не удалось открыть файл в плеере');
+    }
+
+    function handlePlayerButton() {
+        var config = cfg();
+
+        if (!config.player_package || config.player_package === 'custom') {
+            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
+            return;
+        }
+
+        openFileInPlayer(config.smb_file, config.player_package);
     }
 
     // ================= НАЖАТИЯ =================
@@ -495,7 +536,6 @@
                 field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
             });
 
-            // Выпадающий список выбора плеера
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: {
@@ -507,6 +547,15 @@
                 field: {
                     name: 'Видеоплеер',
                     description: 'Выберите плеер из списка для кнопки «Открыть плеер»'
+                }
+            });
+
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: { name: 'qbit_smb_file', type: 'input', values: '', default: DEF_SMB_FILE },
+                field: {
+                    name: 'SMB-путь к файлу или папке',
+                    description: 'Например: smb://192.168.1.50/Media/Movie.mkv или smb://192.168.1.50/Media/'
                 }
             });
 
@@ -606,7 +655,7 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    '.qbit-direct-actions{display:inline-flex;align-items:center;position:relative;z-index:999;}' +
+                    '.qbit-direct-actions{display:inline-flex;align-items:center;position:relative;z-index:999;flex-wrap:wrap;}' +
                     '.qbit-direct-btn{display:inline-flex;align-items:center;justify-content:center;margin:8px;padding:10px 18px;background:#303638;color:white;border:2px solid #888;border-radius:6px;font-size:18px;white-space:nowrap;}' +
                     '.qbit-direct-btn.focus{border-color:white;background:#51595c;}' +
                     '.qbit-direct-player{background:#1f4b3a;border-color:#3fae7a;}' +
