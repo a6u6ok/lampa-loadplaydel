@@ -412,175 +412,60 @@
 
     // ================= ВИДЕОПЛЕЕР =================
 
-    // Получить список установленных плееров (пакет + название)
-    function getInstalledPlayers(callback) {
-        function finish(list) {
-            var result = [];
+    // Открыть системный селектор плееров Android.
+    // Передаём "пустой" URL, чтобы Android показал диалог выбора приложения
+    // для обработки видео-интента. Пользователь выбирает плеер, и система
+    // запоминает его как действие по умолчанию для будущих вызовов.
+    function showSystemPlayerPicker() {
+        var dummyUrl = 'https://example.com/placeholder.mp4';
+        var dummyTitle = 'Выбор плеера';
 
-            if (Array.isArray(list)) {
-                list.forEach(function (p) {
-                    if (!p) return;
-
-                    if (typeof p === 'string') {
-                        result.push({ package: p, name: p });
-                    } else {
-                        var pkg = p.package || p.Package || p.id || p.Id || '';
-                        var nm = p.name || p.Name || p.label || p.Label || pkg;
-
-                        if (pkg) result.push({ package: pkg, name: nm });
-                    }
-                });
+        var playerData = {
+            url: dummyUrl,
+            title: dummyTitle,
+            card: {
+                title: dummyTitle
             }
-
-            callback(result);
-        }
+        };
 
         try {
             if (
                 window.Lampa &&
                 Lampa.Android &&
-                typeof Lampa.Android.getPlayers === 'function'
+                typeof Lampa.Android.openPlayer === 'function'
             ) {
-                Lampa.Android.getPlayers(function (players) {
-                    finish(players);
-                });
+                Lampa.Android.openPlayer(dummyUrl, playerData);
+                notify('Выберите плеер из списка');
                 return;
             }
 
-            if (window.AndroidJS && typeof AndroidJS.getPlayers === 'function') {
-                var raw = AndroidJS.getPlayers();
-                var parsed = null;
-
-                try {
-                    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                } catch (e) {}
-
-                finish(parsed);
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
+                AndroidJS.openPlayer(dummyUrl, JSON.stringify(playerData));
+                notify('Выберите плеер из списка');
                 return;
             }
 
-            if (window.Android && typeof Android.getPlayers === 'function') {
-                Android.getPlayers(function (players) {
-                    finish(players);
-                });
+            if (window.Android && typeof Android.openPlayer === 'function') {
+                Android.openPlayer(dummyUrl, playerData);
+                notify('Выберите плеер из списка');
                 return;
             }
+
+            notify('Android-мост плеера недоступен в этой сборке Lampa');
         } catch (error) {
-            console.error('[qBittorrent] getPlayers error:', error);
-        }
-
-        finish([]);
-    }
-
-    function savePlayerPackage(pkg) {
-        try {
-            if (window.Lampa && Lampa.Storage) {
-                Lampa.Storage.set('qbit_player_package', pkg || '');
-            }
-        } catch (error) {
-            console.error('[qBittorrent] save player error:', error);
+            console.error('[qBittorrent] player picker error:', error);
+            notify('Ошибка вызова выбора плеера');
         }
     }
 
-    function showPlayerPicker() {
-        var config = cfg();
-
-        getInstalledPlayers(function (players) {
-            if (!players.length) {
-                var manual = window.prompt(
-                    'Пакет плеера (например, org.videolan.vlc). Пусто = системный выбор',
-                    config.player_package || ''
-                );
-
-                if (manual !== null) {
-                    savePlayerPackage(manual.trim());
-                    notify(manual.trim() ? 'Плеер сохранён' : 'Плеер сброшен');
-                }
-                return;
-            }
-
-            var items = players.map(function (p) {
-                return {
-                    title: p.name,
-                    package: p.package
-                };
-            });
-
-            items.unshift({
-                title: 'Системный выбор (спрашивать всегда)',
-                package: ''
-            });
-
-            var current = -1;
-
-            for (var i = 0; i < items.length; i++) {
-                if (items[i].package === (config.player_package || '')) {
-                    current = i;
-                    break;
-                }
-            }
-
-            try {
-                if (window.Lampa && Lampa.Select) {
-                    Lampa.Select.show({
-                        title: 'Выбор плеера',
-                        items: items,
-                        start: current >= 0 ? current : 0,
-                        onSelect: function (item) {
-                            savePlayerPackage(item.package);
-                            notify(
-                                item.package
-                                    ? 'Плеер: ' + item.title
-                                    : 'Плеер: системный выбор'
-                            );
-
-                            try {
-                                Lampa.Controller.toggle('content');
-                            } catch (e) {}
-                        },
-                        onBack: function () {
-                            try {
-                                Lampa.Controller.toggle('content');
-                            } catch (e) {}
-                        }
-                    });
-                    return;
-                }
-            } catch (error) {
-                console.error('[qBittorrent] Select error:', error);
-            }
-
-            var listText = items
-                .map(function (i, idx) {
-                    return (
-                        idx +
-                        1 +
-                        '. ' +
-                        i.title +
-                        (i.package ? ' (' + i.package + ')' : '')
-                    );
-                })
-                .join('\n');
-
-            var answer = window.prompt(
-                'Выберите плеер (номер):\n' + listText,
-                String((current >= 0 ? current : 0) + 1)
-            );
-
-            var num = parseInt(answer, 10);
-
-            if (!isNaN(num) && num >= 1 && num <= items.length) {
-                var chosen = items[num - 1];
-                savePlayerPackage(chosen.package);
-                notify('Плеер: ' + chosen.title);
-            }
-        });
-    }
-
+    // Открытие реального видео в выбранном плеере.
+    // Если задан player_package и не нужно спрашивать — передаём пакет.
+    // Иначе — просто вызываем openPlayer, Android использует выбор по умолчанию.
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
+            // Нет ссылки — вызываем системный выбор плеера
             debugNotify('Ссылки нет — открываю выбор плеера');
-            showPlayerPicker();
+            showSystemPlayerPicker();
             return;
         }
 
@@ -606,6 +491,7 @@
             }
         };
 
+        // Если задан конкретный пакет и не нужно спрашивать — добавляем
         if (config.player_package && !config.player_ask) {
             playerData.package = config.player_package;
             playerData.packageName = config.player_package;
@@ -822,12 +708,12 @@
                     default: ''
                 },
                 field: {
-                    name: 'Выбрать установленный плеер',
+                    name: 'Выбрать плеер',
                     description:
-                        'Открыть список плееров, установленных на устройстве',
+                        'Открыть системный список установленных плееров',
                     onRender: function (item) {
                         item.on('hover:enter', function () {
-                            showPlayerPicker();
+                            showSystemPlayerPicker();
                         });
                     }
                 }
@@ -842,9 +728,9 @@
                     default: DEF_PLAYER_PACKAGE
                 },
                 field: {
-                    name: 'Плеер по умолчанию',
+                    name: 'Пакет плеера (необязательно)',
                     description:
-                        'Пакет плеера. Пусто = системный выбор плеера'
+                        'Оставьте пустым для системного выбора. Или укажите пакет, например org.videolan.vlc'
                 }
             });
 
@@ -858,7 +744,7 @@
                 field: {
                     name: 'Всегда спрашивать плеер',
                     description:
-                        'Открывать выбор установленных плееров при каждом нажатии'
+                        'Показывать системный выбор при каждом запуске'
                 }
             });
 
@@ -984,7 +870,7 @@
                     if (streamUrl) {
                         openInPlayer(streamUrl, title);
                     } else {
-                        showPlayerPicker();
+                        showSystemPlayerPicker();
                     }
                 }
             );
