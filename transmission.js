@@ -412,67 +412,134 @@
 
     // ================= ВИДЕОПЛЕЕР =================
 
-    // Открыть системный селектор плееров Android.
-    // Передаём "пустой" URL, чтобы Android показал диалог выбора приложения
-    // для обработки видео-интента. Пользователь выбирает плеер, и система
-    // запоминает его как действие по умолчанию для будущих вызовов.
+    // === ПРЯМОЙ ВЫЗОВ СИСТЕМНОГО СЕЛЕКТОРА ANDROID ===
+    // Пробуем несколько способов по очереди, пока один не сработает.
+    // Возвращаем true если удалось вызвать хоть один способ.
+
     function showSystemPlayerPicker() {
-        var dummyUrl = 'https://example.com/placeholder.mp4';
-        var dummyTitle = 'Выбор плеера';
+        var called = false;
 
-        var playerData = {
-            url: dummyUrl,
-            title: dummyTitle,
-            card: {
-                title: dummyTitle
+        // Тестовый URL реального видео (короткий образец), чтобы Android
+        // распознал intent как видео и показал все плееры.
+        // Если это не сработает, используем заведомо валидный http-url.
+        var testUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+        var testTitle = 'Выбор плеера';
+
+        // ---------- Способ 1: AndroidJS.openPlayer (прямой мост) ----------
+        if (!called && window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
+            try {
+                var playerData = {
+                    url: testUrl,
+                    title: testTitle,
+                    card: { title: testTitle }
+                };
+
+                // Пробуем сигнатуру с JSON-строкой (наиболее распространённая в Lampa)
+                AndroidJS.openPlayer(testUrl, JSON.stringify(playerData));
+                called = true;
+                debugNotify('Выбор плеера через AndroidJS.openPlayer');
+            } catch (e1) {
+                console.warn('[qBittorrent] AndroidJS.openPlayer (json) failed:', e1);
+
+                try {
+                    // Пробуем сигнатуру с объектом
+                    AndroidJS.openPlayer(testUrl, playerData);
+                    called = true;
+                    debugNotify('Выбор плеера через AndroidJS.openPlayer (obj)');
+                } catch (e2) {
+                    console.warn('[qBittorrent] AndroidJS.openPlayer (obj) failed:', e2);
+                }
             }
-        };
-
-        try {
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.openPlayer === 'function'
-            ) {
-                Lampa.Android.openPlayer(dummyUrl, playerData);
-                notify('Выберите плеер из списка');
-                return;
-            }
-
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(dummyUrl, JSON.stringify(playerData));
-                notify('Выберите плеер из списка');
-                return;
-            }
-
-            if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(dummyUrl, playerData);
-                notify('Выберите плеер из списка');
-                return;
-            }
-
-            notify('Android-мост плеера недоступен в этой сборке Lampa');
-        } catch (error) {
-            console.error('[qBittorrent] player picker error:', error);
-            notify('Ошибка вызова выбора плеера');
         }
+
+        // ---------- Способ 2: Lampa.Android.openPlayer ----------
+        if (!called && window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
+            try {
+                Lampa.Android.openPlayer(testUrl, {
+                    url: testUrl,
+                    title: testTitle,
+                    card: { title: testTitle }
+                });
+                called = true;
+                debugNotify('Выбор плеера через Lampa.Android.openPlayer');
+            } catch (e) {
+                console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
+            }
+        }
+
+        // ---------- Способ 3: Android.openPlayer (старый интерфейс) ----------
+        if (!called && window.Android && typeof Android.openPlayer === 'function') {
+            try {
+                Android.openPlayer(testUrl, {
+                    url: testUrl,
+                    title: testTitle,
+                    card: { title: testTitle }
+                });
+                called = true;
+                debugNotify('Выбор плеера через Android.openPlayer');
+            } catch (e) {
+                console.warn('[qBittorrent] Android.openPlayer failed:', e);
+            }
+        }
+
+        // ---------- Способ 4: AndroidJS.call / Intent (низкоуровневый) ----------
+        // Некоторые сборки Lampa предоставляют AndroidJS.call для произвольных вызовов.
+        if (!called && window.AndroidJS) {
+            // Пробуем AndroidJS.call с action=android.intent.action.VIEW
+            if (typeof AndroidJS.call === 'function') {
+                try {
+                    AndroidJS.call('intent', JSON.stringify({
+                        action: 'android.intent.action.VIEW',
+                        data: testUrl,
+                        type: 'video/mp4',
+                        flags: ['activity_new_task']
+                    }));
+                    called = true;
+                    debugNotify('Выбор плеера через AndroidJS.call(intent)');
+                } catch (e) {
+                    console.warn('[qBittorrent] AndroidJS.call(intent) failed:', e);
+                }
+            }
+
+            // Пробуем AndroidJS.startActivity
+            if (!called && typeof AndroidJS.startActivity === 'function') {
+                try {
+                    AndroidJS.startActivity(JSON.stringify({
+                        action: 'android.intent.action.VIEW',
+                        data: testUrl,
+                        type: 'video/mp4',
+                        flags: ['activity_new_task']
+                    }));
+                    called = true;
+                    debugNotify('Выбор плеера через AndroidJS.startActivity');
+                } catch (e) {
+                    console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
+                }
+            }
+        }
+
+        // ---------- Результат ----------
+        if (called) {
+            notify('Выберите плеер из списка');
+        } else {
+            notify('Не удалось вызвать выбор плеера. Проверьте, что Lampa запущена как Android-приложение.');
+        }
+
+        return called;
     }
 
     // Открытие реального видео в выбранном плеере.
-    // Если задан player_package и не нужно спрашивать — передаём пакет.
-    // Иначе — просто вызываем openPlayer, Android использует выбор по умолчанию.
+    // Если player_package задан и player_ask выключен — передаём пакет.
+    // Иначе — Android использует выбор по умолчанию (или спросит, если так настроено в системе).
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
-            // Нет ссылки — вызываем системный выбор плеера
             debugNotify('Ссылки нет — открываю выбор плеера');
             showSystemPlayerPicker();
             return;
         }
 
         if (/^magnet:\?/i.test(mediaUrl)) {
-            notify(
-                'Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent'
-            );
+            notify('Плеер не воспроизводит magnet. Сначала добавь торрент в qBittorrent');
             return;
         }
 
@@ -491,7 +558,6 @@
             }
         };
 
-        // Если задан конкретный пакет и не нужно спрашивать — добавляем
         if (config.player_package && !config.player_ask) {
             playerData.package = config.player_package;
             playerData.packageName = config.player_package;
@@ -710,7 +776,7 @@
                 field: {
                     name: 'Выбрать плеер',
                     description:
-                        'Открыть системный список установленных плееров',
+                        'Открыть системный список установленных плееров Android',
                     onRender: function (item) {
                         item.on('hover:enter', function () {
                             showSystemPlayerPicker();
@@ -730,7 +796,7 @@
                 field: {
                     name: 'Пакет плеера (необязательно)',
                     description:
-                        'Оставьте пустым для системного выбора. Или укажите пакет, например org.videolan.vlc'
+                        'Оставьте пустым. Если системный выбор не работает — укажите пакет, например org.videolan.vlc'
                 }
             });
 
