@@ -1,20 +1,15 @@
 (function () {
     'use strict';
 
-    // ===== ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =====
-    var DEF_URL = 'http://192.168.1.50:9091'; // По умолчанию порт Transmission - 9091
-    var DEF_USER = '';
+    var DEF_URL = 'http://192.168.1.1:9080'; // По умолчанию порт Keenetic
+    var DEF_USER = 'admin';
     var DEF_PASS = '';
-    
-    // Для Transmission категорий и путей в API добавления нет,
-    // он сохраняет туда, куда настроено в его конфиге (или в настройках ниже).
     
     var DEF_PLAYER = 'vimu';
     var DEF_PLAYER_PKG = '';
-    var DEF_LOCAL_PREFIX = 'smb://192.168.1.50/qBittorrent'; // Путь к папке загрузок на устройстве (SMB)
+    var DEF_LOCAL_PREFIX = 'smb://192.168.1.1/qBittorrent'; // Папка загрузок
     var DEF_POLL_MS = 5000;
     var DEF_SHOW_DELETE = true;
-    // =================================
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 1000;
@@ -31,22 +26,12 @@
     var sessionId = '';
 
     function notify(text) {
-        try {
-            if (window.Lampa && Lampa.Noty) {
-                Lampa.Noty.show(text);
-                return;
-            }
-        } catch (e) {}
+        try { if (window.Lampa && Lampa.Noty) { Lampa.Noty.show(text); return; } } catch (e) {}
         console.log('[Transmission]', text);
     }
 
     function storeGet(key, def) {
-        try {
-            if (window.Lampa && Lampa.Storage) {
-                var v = Lampa.Storage.get(key, def);
-                if (v !== undefined && v !== null) return v;
-            }
-        } catch (e) {}
+        try { if (window.Lampa && Lampa.Storage) { var v = Lampa.Storage.get(key, def); if (v !== undefined && v !== null) return v; } } catch (e) {}
         return def;
     }
 
@@ -79,7 +64,6 @@
         return String(base).replace(/\/+$/, '') + '/' + String(sub).replace(/^\/+/, '');
     }
 
-    // Хеш из magnet-ссылки (Base32 / Base16)
     function magnetHash(magnet) {
         var m = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
         if (!m) return '';
@@ -104,89 +88,74 @@
         return h.toLowerCase();
     }
 
-    // Универсальный запрос к Transmission RPC
+    // Улучшенный запрос к Transmission
     function trRequest(method, args, cb) {
         var c = cfg();
         var data = JSON.stringify({ method: method, arguments: args || {} });
         
         var headers = { 'Content-Type': 'application/json' };
-        if (sessionId) {
-            headers['X-Transmission-Session-Id'] = sessionId;
-        }
-        if (c.user) {
-            headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
-        }
+        if (sessionId) headers['X-Transmission-Session-Id'] = sessionId;
+        if (c.user) headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
 
-        // Если нативный мост не работает или ломается, используем fetch
-        // (Transmission обычно отдает CORS нормально, в отличие от qBittorrent)
-        function doFetch() {
-            fetch(base() + '/transmission/rpc', {
-                method: 'POST',
-                headers: headers,
-                body: data
-            }).then(function (res) {
-                // Перехватываем ID сессии
-                if (res.status === 409 || res.headers.has('X-Transmission-Session-Id')) {
-                    var sid = res.headers.get('X-Transmission-Session-Id');
-                    if (sid) sessionId = sid;
-                    
-                    // Если это 409, нужно повторить запрос с новым ID
-                    if (res.status === 409) {
-                        return trRequest(method, args, cb);
-                    }
-                }
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                return res.json();
-            }).then(function (json) {
-                if (json && json.result === 'success') {
-                    cb(true, json.arguments);
-                } else {
-                    console.warn('[Transmission] RPC Error:', json);
-                    cb(false, json);
-                }
-            }).catch(function (err) {
-                console.warn('[Transmission] fetch error:', err);
+        var url = base() + '/transmission/rpc';
+
+        function processResponse(text) {
+            if (!text || text.indexOf('409') !== -1 || text.length < 10) {
+                // Если ответ пустой или 409 — пробуем вытащить Session ID
+                cb(false, { is409: true });
+                return;
+            }
+            try {
+                var json = JSON.parse(text);
+                cb(json.result === 'success', json.arguments);
+            } catch (e) {
                 cb(false, null);
-            });
+            }
         }
 
+        // Используем ТОЛЬКО нативный запрос, так как fetch блокируется Keenetic
         if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-            doFetch();
+            // Если нативного нет, пробуем fetch (на всякий случай)
+            fetch(url, { method: 'POST', headers: headers, body: data })
+                .then(res => res.text())
+                .then(processResponse)
+                .catch(() => cb(false, null));
             return;
         }
 
-        // Пытаемся использовать нативный AndroidJS (с фоллбэком на fetch)
-        try {
-            AndroidJS.httpReq(
-                base() + '/transmission/rpc',
-                JSON.stringify({ method: 'POST', body: data, headers: headers })
-            );
-        } catch (e) {
-            doFetch();
-            return;
-        }
+        var reqStr = JSON.stringify({ url: url, method: 'POST', body: data, headers: headers });
+        try { AndroidJS.getResp(); } catch (e) {}
+        
+        try { AndroidJS.httpReq(reqStr); } 
+        catch (e) { cb(false, null); return; }
 
         var tries = 0;
         (function poll() {
             tries++;
             var r = null;
             try { r = AndroidJS.getResp(); } catch (e) {}
-
-            if (typeof r === 'string' && r.length > 2) {
-                try {
-                    var json = JSON.parse(r);
-                    cb(json.result === 'success', json.arguments);
-                } catch (e) {
-                    doFetch(); // Если пришел мусор, пробуем fetch
-                }
+            
+            if (typeof r === 'string' && r.length > 0) {
+                processResponse(r);
                 return;
             }
-            if (tries > 10) {
-                doFetch();
-                return;
-            }
+            if (tries > 20) { cb(false, null); return; }
             setTimeout(poll, 200);
         })();
+    }
+
+    // Обертка для перехвата Session ID
+    function trRequestWithSession(method, args, cb) {
+        trRequest(method, args, function(ok, res) {
+            if (!ok && res && res.is409) {
+                // В реальности Keenetic не отдает заголовок X-Transmission-Session-Id через getResp,
+                // поэтому мы просто пробуем отправить запрос еще раз без ID.
+                // Встроенный Transmission часто пускает второй запрос.
+                trRequest(method, args, cb);
+            } else {
+                cb(ok, res);
+            }
+        });
     }
 
     function trAdd(magnet, title, onDone) {
@@ -198,12 +167,12 @@
 
         notify('Отправляю в Transmission...');
         
-        trRequest('torrent-add', { filename: magnet }, function (ok, args) {
+        trRequestWithSession('torrent-add', { filename: magnet }, function (ok, args) {
             if (ok) {
-                notify('Добавлено в Transmission ✔');
+                notify('Добавлено ✔');
                 if (onDone) onDone(true, args);
             } else {
-                notify('Ошибка добавления в Transmission');
+                notify('Ошибка добавления');
                 if (onDone) onDone(false);
             }
         });
@@ -211,41 +180,25 @@
 
     function trTorrentInfo(hash, cb) {
         if (!hash) { cb(null); return; }
-        
-        trRequest('torrent-get', { 
+        trRequestWithSession('torrent-get', { 
             ids: [ hash ], 
             fields: [ 'id', 'hashString', 'name', 'percentDone', 'status', 'downloadDir', 'totalSize', 'files' ] 
         }, function (ok, args) {
-            if (ok && args && args.torrents && args.torrents.length > 0) {
-                cb(args.torrents[0]);
-            } else {
-                cb(null);
-            }
+            if (ok && args && args.torrents && args.torrents.length > 0) cb(args.torrents[0]);
+            else cb(null);
         });
     }
 
     function trDelete(hash, deleteFiles, cb) {
         if (!hash) { if (cb) cb(false); return; }
-        
-        trRequest('torrent-remove', { 
-            ids: [ hash ], 
-            'delete-local-data': deleteFiles 
-        }, function (ok) {
+        trRequestWithSession('torrent-remove', { ids: [ hash ], 'delete-local-data': deleteFiles }, function (ok) {
             if (cb) cb(ok);
         });
     }
 
-    // Формирование пути для плеера
     function toDevicePath(torrent) {
         var c = cfg();
-        // В Transmission нет content_path, есть downloadDir (папка загрузки) и name (название)
-        var serverPath = joinPath(torrent.downloadDir || '', torrent.name || '');
-        
-        if (!c.local_prefix) return serverPath;
-
-        // Заменяем серверный путь на локальный (SMB)
-        // Если downloadDir равен /opt/share/Downloads, а local_prefix = smb://192.168.1.50/qBittorrent
-        // То путь будет smb://192.168.1.50/qBittorrent/Название раздачи
+        if (!c.local_prefix) return joinPath(torrent.downloadDir || '', torrent.name || '');
         return joinPath(c.local_prefix, torrent.name || '');
     }
 
@@ -258,27 +211,18 @@
         else if (PLAYERS[c.player]) pkg = PLAYERS[c.player].pkg;
 
         var uri = fileUri;
-
         try {
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer(uri, pkg, title || '', mime);
                 return true;
             }
         } catch (e) {}
-
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: mime,
-                    package: pkg,
-                    extra: { 'android.intent.extra.TITLE': title || '' }
-                }));
+                AndroidJS.startActivity(JSON.stringify({ action: 'android.intent.action.VIEW', data: uri, type: mime, package: pkg, extra: { 'android.intent.extra.TITLE': title || '' } }));
                 return true;
             }
         } catch (e) {}
-
         try {
             var intent = 'intent:' + uri + '#Intent;action=android.intent.action.VIEW;type=' + mime + ';';
             if (pkg) intent += 'package=' + pkg + ';';
@@ -286,7 +230,6 @@
             window.location.href = intent;
             return true;
         } catch (e) {}
-
         notify('Не удалось запустить плеер');
         return false;
     }
@@ -297,41 +240,25 @@
             var now = Date.now();
             if (now - last < ACTION_LOCK_MS) return;
             last = now;
-            if (ev) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
-            }
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); if (ev.stopImmediatePropagation) ev.stopImmediatePropagation(); }
             handler(ev);
         }
         el.addEventListener('hover:enter', wrap);
         el.addEventListener('click', wrap);
     }
 
-    // ================= НАСТРОЙКИ =================
     function registerSettings() {
         try {
             if (!window.Lampa || !Lampa.SettingsApi) return;
-            
-            Lampa.SettingsApi.addComponent({
-                component: 'tr_client',
-                icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>',
-                name: 'Transmission'
-            });
-
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_url', type: 'input', values: '', default: DEF_URL }, field: { name: 'Адрес сервера', description: 'http://192.168.1.50:9091' }});
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_user', type: 'input', values: '', default: DEF_USER }, field: { name: 'Логин', description: 'Логин RPC (если включена авторизация)' }});
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Пароль RPC' }});
-            
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player', type: 'select', values: {'vimu': 'Vimu Player', 'vlc': 'VLC', 'mx': 'MX Player', 'kodi': 'Kodi', 'just': 'Just (Video) Player', 'nplayer': 'nPlayer', 'custom': 'Другой'}, default: DEF_PLAYER }, field: { name: 'Медиаплеер', description: 'Для открытия торрента' }});
+            Lampa.SettingsApi.addComponent({ component: 'tr_client', icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>', name: 'Transmission' });
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_url', type: 'input', values: '', default: DEF_URL }, field: { name: 'Адрес сервера', description: 'http://192.168.1.1:9080' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_user', type: 'input', values: '', default: DEF_USER }, field: { name: 'Логин', description: 'admin' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Пароль от веб-интерфейса роутера' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player', type: 'select', values: {'vimu': 'Vimu Player', 'vlc': 'VLC', 'mx': 'MX Player', 'kodi': 'Kodi', 'just': 'Just (Video) Player', 'nplayer': 'nPlayer', 'custom': 'Другой'}, default: DEF_PLAYER }, field: { name: 'Медиаплеер', description: 'Для открытия' }});
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player_pkg', type: 'input', values: '', default: DEF_PLAYER_PKG }, field: { name: 'Пакет плеера', description: 'Для пункта «Другой»' }});
-            
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.50/qBittorrent (куда смотрит Vimu)' }});
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_show_delete', type: 'trigger', default: DEF_SHOW_DELETE }, field: { name: 'Кнопка «Удалить»', description: 'Показывать кнопку удаления' }});
-            
-        } catch (e) {
-            console.error('[Transmission] Ошибка настроек:', e);
-        }
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.1/qBittorrent' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_show_delete', type: 'trigger', default: DEF_SHOW_DELETE }, field: { name: 'Кнопка «Удалить»', description: 'Показывать кнопку' }});
+        } catch (e) {}
     }
 
     function addMenuItem() {
@@ -340,10 +267,7 @@
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
             Lampa.Menu.addButton(icon, 'Transmission', function () {
                 Lampa.Controller.toggle('settings');
-                setTimeout(function () {
-                    var item = document.querySelector('[data-component="tr_client"]');
-                    if (item) item.click();
-                }, 100);
+                setTimeout(function () { var item = document.querySelector('[data-component="tr_client"]'); if (item) item.click(); }, 100);
             });
         } catch (e) {}
     }
@@ -375,7 +299,7 @@
                 bindPress(delBtn, function () {
                     notify('Удаляю торрент...');
                     trDelete(hash, false, function (ok) {
-                        notify(ok ? 'Торрент удалён ✔' : 'Не удалось удалить');
+                        notify(ok ? 'Удалено ✔' : 'Ошибка удаления');
                         if (ok) {
                             var btns = item.querySelectorAll('.tr-direct-btn');
                             for (var i = 0; i < btns.length; i++) btns[i].remove();
@@ -394,13 +318,9 @@
                 timer = setTimeout(function () { trTorrentInfo(hash, tick); }, cfg().poll_ms);
                 return;
             }
-
-            // В Transmission: status 6 = Seeding (Раздача, т.е. скачан), 0 = Stopped, 4 = Downloading
             var progress = typeof torrent.percentDone === 'number' ? torrent.percentDone : 0;
             var done = progress >= 1 || torrent.status === 6 || torrent.status === 5 || torrent.status === 1;
-
             if (done) { activate(torrent); return; }
-
             tries++;
             if (tries > MAX_TRIES) { cleanup(); return; }
             timer = setTimeout(function () { trTorrentInfo(hash, tick); }, cfg().poll_ms);
@@ -428,12 +348,7 @@
             addBtn.className = 'tr-direct-btn selector';
             addBtn.tabIndex = 0;
             addBtn.textContent = '⬇ В Transmission';
-            
-            bindPress(addBtn, function () {
-                trAdd(magnet, title, function (ok) {
-                    if (hash) startProgressWatch(item, hash, title);
-                });
-            });
+            bindPress(addBtn, function () { trAdd(magnet, title, function (ok) { if (hash) startProgressWatch(item, hash, title); }); });
 
             var playBtn = document.createElement('div');
             playBtn.className = 'tr-direct-btn tr-player-btn tr-btn--waiting selector';
@@ -455,9 +370,7 @@
             if (delBtn) item.appendChild(delBtn);
 
             if (hash) {
-                trTorrentInfo(hash, function (torrent) {
-                    if (torrent) startProgressWatch(item, hash, title, torrent);
-                });
+                trTorrentInfo(hash, function (torrent) { if (torrent) startProgressWatch(item, hash, title, torrent); });
             }
         });
     }
@@ -481,14 +394,9 @@
                     '.tr-del-btn[data-ready="1"].focus{border-color:white;background:#6b3f3f;}';
                 document.head.appendChild(style);
             }
-        } catch (error) {
-            console.error('[Transmission] Ошибка инициализации:', error);
-        }
+        } catch (error) {}
     }
 
-    if (window.Lampa && Lampa.Listener) {
-        initializePlugin();
-    } else {
-        document.addEventListener('appready', function () { initializePlugin(); });
-    }
+    if (window.Lampa && Lampa.Listener) { initializePlugin(); } 
+    else { document.addEventListener('appready', function () { initializePlugin(); }); }
 })();
