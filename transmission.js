@@ -24,7 +24,8 @@
 
     // Список плееров для выпадающего меню
     var PLAYERS_LIST = {
-        '':        'Не выбран',
+        '': 'Не выбран',
+        'top.rootu.dddplayer': 'DDD Video Player',
         'org.videolan.vlc': 'VLC',
         'com.mxtech.videoplayer.ad': 'MX Player',
         'net.gtvbox.videoplayer': 'Vimu Player',
@@ -494,18 +495,18 @@
                 field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
             });
 
-            // ИСПОЛЬЗУЕМ TYPE: SELECT вместо BUTTON
+            // Выпадающий список выбора плеера
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
-                param: { 
-                    name: 'qbit_player_package', 
-                    type: 'select', 
-                    values: PLAYERS_LIST, 
-                    default: '' 
+                param: {
+                    name: 'qbit_player_package',
+                    type: 'select',
+                    values: PLAYERS_LIST,
+                    default: ''
                 },
-                field: { 
-                    name: 'Видеоплеер', 
-                    description: 'Выберите плеер из списка для кнопки «Открыть плеер»' 
+                field: {
+                    name: 'Видеоплеер',
+                    description: 'Выберите плеер из списка для кнопки «Открыть плеер»'
                 }
             });
 
