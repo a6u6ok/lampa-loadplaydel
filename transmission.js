@@ -411,129 +411,81 @@
     }
 
     // ================= ВИДЕОПЛЕЕР =================
+    //
+    // ВАЖНО: рабочая сигнатура в вашей сборке Lampa:
+    //   AndroidJS.openPlayer(uri, package, title, mime)
+    //
+    // Если package === '' — Android показывает системный селектор
+    // установленных плееров (то, что нужно).
 
-    // === ПРЯМОЙ ВЫЗОВ СИСТЕМНОГО СЕЛЕКТОРА ANDROID ===
-    // Пробуем несколько способов по очереди, пока один не сработает.
-    // Возвращаем true если удалось вызвать хоть один способ.
+    function playerIntent(fileUri, title) {
+        var c = cfg();
+        var pkg = c.player_package || '';
+        var mime = 'video/*';
+        var uri = fileUri;
 
-    function showSystemPlayerPicker() {
-        var called = false;
-
-        // Тестовый URL реального видео (короткий образец), чтобы Android
-        // распознал intent как видео и показал все плееры.
-        // Если это не сработает, используем заведомо валидный http-url.
-        var testUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
-        var testTitle = 'Выбор плеера';
-
-        // ---------- Способ 1: AndroidJS.openPlayer (прямой мост) ----------
-        if (!called && window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-            try {
-                var playerData = {
-                    url: testUrl,
-                    title: testTitle,
-                    card: { title: testTitle }
-                };
-
-                // Пробуем сигнатуру с JSON-строкой (наиболее распространённая в Lampa)
-                AndroidJS.openPlayer(testUrl, JSON.stringify(playerData));
-                called = true;
-                debugNotify('Выбор плеера через AndroidJS.openPlayer');
-            } catch (e1) {
-                console.warn('[qBittorrent] AndroidJS.openPlayer (json) failed:', e1);
-
-                try {
-                    // Пробуем сигнатуру с объектом
-                    AndroidJS.openPlayer(testUrl, playerData);
-                    called = true;
-                    debugNotify('Выбор плеера через AndroidJS.openPlayer (obj)');
-                } catch (e2) {
-                    console.warn('[qBittorrent] AndroidJS.openPlayer (obj) failed:', e2);
-                }
+        // 1) Основной способ — рабочий вызов с 4 аргументами
+        try {
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
+                AndroidJS.openPlayer(uri, pkg, title || '', mime);
+                return true;
             }
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
         }
 
-        // ---------- Способ 2: Lampa.Android.openPlayer ----------
-        if (!called && window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-            try {
-                Lampa.Android.openPlayer(testUrl, {
-                    url: testUrl,
-                    title: testTitle,
-                    card: { title: testTitle }
-                });
-                called = true;
-                debugNotify('Выбор плеера через Lampa.Android.openPlayer');
-            } catch (e) {
-                console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
+        // 2) Запасной — AndroidJS.startActivity с Intent
+        try {
+            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
+                AndroidJS.startActivity(JSON.stringify({
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: mime,
+                    package: pkg,
+                    extra: { 'android.intent.extra.TITLE': title || '' }
+                }));
+                return true;
             }
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
         }
 
-        // ---------- Способ 3: Android.openPlayer (старый интерфейс) ----------
-        if (!called && window.Android && typeof Android.openPlayer === 'function') {
-            try {
-                Android.openPlayer(testUrl, {
-                    url: testUrl,
-                    title: testTitle,
-                    card: { title: testTitle }
-                });
-                called = true;
-                debugNotify('Выбор плеера через Android.openPlayer');
-            } catch (e) {
-                console.warn('[qBittorrent] Android.openPlayer failed:', e);
-            }
+        // 3) Последний резерв — intent:// через location.href
+        try {
+            var intent =
+                'intent:' + uri +
+                '#Intent;action=android.intent.action.VIEW;type=' +
+                mime + ';';
+            if (pkg) intent += 'package=' + pkg + ';';
+            intent += 'end';
+            window.location.href = intent;
+            return true;
+        } catch (e) {
+            console.warn('[qBittorrent] intent:// failed:', e);
         }
 
-        // ---------- Способ 4: AndroidJS.call / Intent (низкоуровневый) ----------
-        // Некоторые сборки Lampa предоставляют AndroidJS.call для произвольных вызовов.
-        if (!called && window.AndroidJS) {
-            // Пробуем AndroidJS.call с action=android.intent.action.VIEW
-            if (typeof AndroidJS.call === 'function') {
-                try {
-                    AndroidJS.call('intent', JSON.stringify({
-                        action: 'android.intent.action.VIEW',
-                        data: testUrl,
-                        type: 'video/mp4',
-                        flags: ['activity_new_task']
-                    }));
-                    called = true;
-                    debugNotify('Выбор плеера через AndroidJS.call(intent)');
-                } catch (e) {
-                    console.warn('[qBittorrent] AndroidJS.call(intent) failed:', e);
-                }
-            }
-
-            // Пробуем AndroidJS.startActivity
-            if (!called && typeof AndroidJS.startActivity === 'function') {
-                try {
-                    AndroidJS.startActivity(JSON.stringify({
-                        action: 'android.intent.action.VIEW',
-                        data: testUrl,
-                        type: 'video/mp4',
-                        flags: ['activity_new_task']
-                    }));
-                    called = true;
-                    debugNotify('Выбор плеера через AndroidJS.startActivity');
-                } catch (e) {
-                    console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
-                }
-            }
-        }
-
-        // ---------- Результат ----------
-        if (called) {
-            notify('Выберите плеер из списка');
-        } else {
-            notify('Не удалось вызвать выбор плеера. Проверьте, что Lampa запущена как Android-приложение.');
-        }
-
-        return called;
+        notify('Не удалось запустить плеер');
+        return false;
     }
 
-    // Открытие реального видео в выбранном плеере.
-    // Если player_package задан и player_ask выключен — передаём пакет.
-    // Иначе — Android использует выбор по умолчанию (или спросит, если так настроено в системе).
+    // Системный селектор плееров = вызов openPlayer с пустым package.
+    // Используем реальный тестовый URL, чтобы Android распознал intent как видео.
+    function showSystemPlayerPicker() {
+        var testUrl =
+            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+
+        debugNotify('Открываю системный выбор плеера...');
+
+        var ok = playerIntent(testUrl, 'Выбор плеера');
+
+        if (ok) {
+            notify('Выберите плеер из списка');
+        }
+    }
+
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
-            debugNotify('Ссылки нет — открываю выбор плеера');
+            // Нет прямой ссылки — открываем системный селектор
             showSystemPlayerPicker();
             return;
         }
@@ -543,53 +495,69 @@
             return;
         }
 
-        if (!/^https?:\/\//i.test(mediaUrl)) {
-            notify('Поддерживаются только http/https-ссылки');
+        if (!/^https?:\/\//i.test(mediaUrl) && !/^(smb|file|content):\/\//i.test(mediaUrl)) {
+            notify('Поддерживаются http/https/smb/file-ссылки');
             return;
         }
 
         var config = cfg();
 
-        var playerData = {
-            url: mediaUrl,
-            title: title || '',
-            card: {
-                title: title || ''
-            }
-        };
-
-        if (config.player_package && !config.player_ask) {
-            playerData.package = config.player_package;
-            playerData.packageName = config.player_package;
+        // Если включено «всегда спрашивать плеер» — сбрасываем пакет,
+        // чтобы Android показал системный селектор.
+        if (config.player_ask) {
+            var savedPkg = config.player_package;
+            // Временно подменяем пакет на пустой — это вызовет селектор
+            // (передаём пустой package в playerIntent через локальную переменную)
+            openWithPkg('', mediaUrl, title);
+            return;
         }
 
-        debugNotify('Открываю ссылку в плеере: ' + mediaUrl);
+        openWithPkg(config.player_package || '', mediaUrl, title);
+    }
+
+    // Вспомогательная функция — вызов плеера с явным пакетом
+    function openWithPkg(pkg, uri, title) {
+        var mime = 'video/*';
 
         try {
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.openPlayer === 'function'
-            ) {
-                Lampa.Android.openPlayer(mediaUrl, playerData);
-                return;
-            }
-
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(mediaUrl, JSON.stringify(playerData));
-                return;
+                AndroidJS.openPlayer(uri, pkg || '', title || '', mime);
+                return true;
             }
-
-            if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(mediaUrl, playerData);
-                return;
-            }
-
-            notify('Android-мост плеера недоступен в этой сборке Lampa');
-        } catch (error) {
-            console.error('[qBittorrent] player open error:', error);
-            notify('Ошибка запуска видеоплеера');
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
         }
+
+        try {
+            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
+                AndroidJS.startActivity(JSON.stringify({
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: mime,
+                    package: pkg || '',
+                    extra: { 'android.intent.extra.TITLE': title || '' }
+                }));
+                return true;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
+        }
+
+        try {
+            var intent =
+                'intent:' + uri +
+                '#Intent;action=android.intent.action.VIEW;type=' +
+                mime + ';';
+            if (pkg) intent += 'package=' + pkg + ';';
+            intent += 'end';
+            window.location.href = intent;
+            return true;
+        } catch (e) {
+            console.warn('[qBittorrent] intent:// failed:', e);
+        }
+
+        notify('Не удалось запустить плеер');
+        return false;
     }
 
     // ================= НАЖАТИЯ =================
@@ -661,8 +629,7 @@
                 },
                 field: {
                     name: 'Логин',
-                    description:
-                        'Логин, если не используется обход аутентификации'
+                    description: 'Логин, если не используется обход аутентификации'
                 }
             });
 
@@ -676,8 +643,7 @@
                 },
                 field: {
                     name: 'Пароль',
-                    description:
-                        'Пароль, если не используется обход аутентификации'
+                    description: 'Пароль, если не используется обход аутентификации'
                 }
             });
 
@@ -761,8 +727,7 @@
                 },
                 field: {
                     name: 'Проверять добавление',
-                    description:
-                        'Проверять, появился ли торрент в qBittorrent'
+                    description: 'Проверять, появился ли торрент в qBittorrent'
                 }
             });
 
@@ -796,7 +761,7 @@
                 field: {
                     name: 'Пакет плеера (необязательно)',
                     description:
-                        'Оставьте пустым. Если системный выбор не работает — укажите пакет, например org.videolan.vlc'
+                        'Пусто = системный селектор. Или укажите пакет, например org.videolan.vlc'
                 }
             });
 
@@ -810,7 +775,7 @@
                 field: {
                     name: 'Всегда спрашивать плеер',
                     description:
-                        'Показывать системный выбор при каждом запуске'
+                        'Показывать системный выбор при каждом запуске видео'
                 }
             });
 
