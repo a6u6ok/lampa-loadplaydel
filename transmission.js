@@ -1,18 +1,15 @@
 (function () {
     'use strict';
 
-    var DEF_URL = 'http://192.168.1.1:9080'; // По умолчанию порт Keenetic
-    var DEF_USER = 'admin';
-    var DEF_PASS = '';
+    var DEF_URL = 'http://192.168.1.1:9080'; 
+    var DEF_USER = 'admin'; // Ваш логин Keenetic
+    var DEF_PASS = '';      // Ваш пароль Keenetic
     
     var DEF_PLAYER = 'vimu';
     var DEF_PLAYER_PKG = '';
-    var DEF_LOCAL_PREFIX = 'smb://192.168.1.1/qBittorrent'; // Папка загрузок
+    var DEF_LOCAL_PREFIX = 'smb://192.168.1.1/ABOBA/download'; // Ваш SMB путь
     var DEF_POLL_MS = 5000;
     var DEF_SHOW_DELETE = true;
-
-    var DEBUG = true;
-    var ACTION_LOCK_MS = 1000;
 
     var PLAYERS = {
         'vimu':    { pkg: 'net.gtvbox.videoplayer',   name: 'Vimu Player' },
@@ -22,8 +19,6 @@
         'just':    { pkg: 'com.brouken.player',       name: 'Just (Video) Player' },
         'nplayer': { pkg: 'com.newin.nplayer.pro',    name: 'nPlayer' }
     };
-
-    var sessionId = '';
 
     function notify(text) {
         try { if (window.Lampa && Lampa.Noty) { Lampa.Noty.show(text); return; } } catch (e) {}
@@ -67,44 +62,23 @@
     function magnetHash(magnet) {
         var m = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
         if (!m) return '';
-        var h = m[1];
-        if (/^[0-9a-fA-F]{40}$/.test(h)) return h.toLowerCase();
-        if (/^[A-Z2-7]{32}$/i.test(h)) {
-            try {
-                var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-                var bits = '';
-                for (var i = 0; i < h.length; i++) {
-                    var idx = alphabet.indexOf(h[i].toUpperCase());
-                    if (idx < 0) return '';
-                    bits += idx.toString(2).padStart(5, '0');
-                }
-                var hex = '';
-                for (var j = 0; j + 4 <= bits.length; j += 4) {
-                    hex += parseInt(bits.substr(j, 4), 2).toString(16);
-                }
-                return hex.toLowerCase();
-            } catch (e) { return ''; }
-        }
-        return h.toLowerCase();
+        return m[1].toLowerCase();
     }
 
-    // Улучшенный запрос к Transmission
+    // Запрос к Transmission с принудительной авторизацией
     function trRequest(method, args, cb) {
         var c = cfg();
         var data = JSON.stringify({ method: method, arguments: args || {} });
         
-        var headers = { 'Content-Type': 'application/json' };
-        if (sessionId) headers['X-Transmission-Session-Id'] = sessionId;
-        if (c.user) headers['Authorization'] = 'Basic ' + btoa(c.user + ':' + c.pass);
+        var headers = { 
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + btoa(c.user + ':' + c.pass)
+        };
 
         var url = base() + '/transmission/rpc';
 
         function processResponse(text) {
-            if (!text || text.indexOf('409') !== -1 || text.length < 10) {
-                // Если ответ пустой или 409 — пробуем вытащить Session ID
-                cb(false, { is409: true });
-                return;
-            }
+            if (!text) { cb(false, null); return; }
             try {
                 var json = JSON.parse(text);
                 cb(json.result === 'success', json.arguments);
@@ -113,21 +87,19 @@
             }
         }
 
-        // Используем ТОЛЬКО нативный запрос, так как fetch блокируется Keenetic
+        // Используем нативный запрос AndroidJS
         if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-            // Если нативного нет, пробуем fetch (на всякий случай)
-            fetch(url, { method: 'POST', headers: headers, body: data })
-                .then(res => res.text())
-                .then(processResponse)
-                .catch(() => cb(false, null));
-            return;
+            cb(false, null); return;
         }
 
-        var reqStr = JSON.stringify({ url: url, method: 'POST', body: data, headers: headers });
         try { AndroidJS.getResp(); } catch (e) {}
         
-        try { AndroidJS.httpReq(reqStr); } 
-        catch (e) { cb(false, null); return; }
+        // Пытаемся отправить запрос
+        try { 
+            AndroidJS.httpReq(url, JSON.stringify({ method: 'POST', body: data, headers: headers })); 
+        } catch (e) { 
+            cb(false, null); return; 
+        }
 
         var tries = 0;
         (function poll() {
@@ -144,20 +116,6 @@
         })();
     }
 
-    // Обертка для перехвата Session ID
-    function trRequestWithSession(method, args, cb) {
-        trRequest(method, args, function(ok, res) {
-            if (!ok && res && res.is409) {
-                // В реальности Keenetic не отдает заголовок X-Transmission-Session-Id через getResp,
-                // поэтому мы просто пробуем отправить запрос еще раз без ID.
-                // Встроенный Transmission часто пускает второй запрос.
-                trRequest(method, args, cb);
-            } else {
-                cb(ok, res);
-            }
-        });
-    }
-
     function trAdd(magnet, title, onDone) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
             notify('Magnet-ссылка не найдена');
@@ -167,12 +125,12 @@
 
         notify('Отправляю в Transmission...');
         
-        trRequestWithSession('torrent-add', { filename: magnet }, function (ok, args) {
+        trRequest('torrent-add', { filename: magnet }, function (ok, args) {
             if (ok) {
                 notify('Добавлено ✔');
                 if (onDone) onDone(true, args);
             } else {
-                notify('Ошибка добавления');
+                notify('Ошибка добавления. Проверьте логин/пароль и порт 9080.');
                 if (onDone) onDone(false);
             }
         });
@@ -180,9 +138,9 @@
 
     function trTorrentInfo(hash, cb) {
         if (!hash) { cb(null); return; }
-        trRequestWithSession('torrent-get', { 
+        trRequest('torrent-get', { 
             ids: [ hash ], 
-            fields: [ 'id', 'hashString', 'name', 'percentDone', 'status', 'downloadDir', 'totalSize', 'files' ] 
+            fields: [ 'id', 'hashString', 'name', 'percentDone', 'status', 'downloadDir' ] 
         }, function (ok, args) {
             if (ok && args && args.torrents && args.torrents.length > 0) cb(args.torrents[0]);
             else cb(null);
@@ -191,7 +149,7 @@
 
     function trDelete(hash, deleteFiles, cb) {
         if (!hash) { if (cb) cb(false); return; }
-        trRequestWithSession('torrent-remove', { ids: [ hash ], 'delete-local-data': deleteFiles }, function (ok) {
+        trRequest('torrent-remove', { ids: [ hash ], 'delete-local-data': deleteFiles }, function (ok) {
             if (cb) cb(ok);
         });
     }
@@ -238,7 +196,7 @@
         var last = 0;
         function wrap(ev) {
             var now = Date.now();
-            if (now - last < ACTION_LOCK_MS) return;
+            if (now - last < 1000) return;
             last = now;
             if (ev) { ev.preventDefault(); ev.stopPropagation(); if (ev.stopImmediatePropagation) ev.stopImmediatePropagation(); }
             handler(ev);
@@ -253,10 +211,10 @@
             Lampa.SettingsApi.addComponent({ component: 'tr_client', icon: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>', name: 'Transmission' });
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_url', type: 'input', values: '', default: DEF_URL }, field: { name: 'Адрес сервера', description: 'http://192.168.1.1:9080' }});
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_user', type: 'input', values: '', default: DEF_USER }, field: { name: 'Логин', description: 'admin' }});
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Пароль от веб-интерфейса роутера' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_pass', type: 'input', values: '', default: DEF_PASS }, field: { name: 'Пароль', description: 'Пароль от роутера' }});
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player', type: 'select', values: {'vimu': 'Vimu Player', 'vlc': 'VLC', 'mx': 'MX Player', 'kodi': 'Kodi', 'just': 'Just (Video) Player', 'nplayer': 'nPlayer', 'custom': 'Другой'}, default: DEF_PLAYER }, field: { name: 'Медиаплеер', description: 'Для открытия' }});
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_player_pkg', type: 'input', values: '', default: DEF_PLAYER_PKG }, field: { name: 'Пакет плеера', description: 'Для пункта «Другой»' }});
-            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.1/qBittorrent' }});
+            Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_local_prefix', type: 'input', values: '', default: DEF_LOCAL_PREFIX }, field: { name: 'Путь к загрузкам', description: 'smb://192.168.1.1/ABOBA/download' }});
             Lampa.SettingsApi.addParam({ component: 'tr_client', param: { name: 'tr_show_delete', type: 'trigger', default: DEF_SHOW_DELETE }, field: { name: 'Кнопка «Удалить»', description: 'Показывать кнопку' }});
         } catch (e) {}
     }
