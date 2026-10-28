@@ -357,8 +357,8 @@
 
     // ================= ЗАПУСК ПЛЕЕРА =================
 
-    // Просто запускает приложение-плеер по его пакету.
-    // Никаких видеофайлов и SMB-путей не передается.
+    // Запускает приложение-плеер по его пакету через системный интент.
+    // Никаких видеофайлов и пустых URL не передается.
     function launchPlayerApp(packageName) {
         var pkg = String(packageName || '').trim();
 
@@ -369,27 +369,8 @@
 
         debugNotify('Запускаю приложение плеера: ' + pkg);
 
-        // 1) Основной способ — AndroidJS.openPlayer с пустым URL
-        try {
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer('', pkg, '', '');
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
-        }
-
-        // 2) Через Lampa.Android.openPlayer
-        try {
-            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer('', { package: pkg, title: '' });
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
-        }
-
-        // 3) Через AndroidJS.startActivity (Intent MAIN/LAUNCHER)
+        // Используем только AndroidJS.startActivity с ACTION_MAIN,
+        // чтобы избежать проверок URL внутри Lampa и просто открыть приложение.
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 var intent = {
@@ -404,17 +385,7 @@
             console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
         }
 
-        // 4) Старый интерфейс
-        try {
-            if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer('', { package: pkg, title: '' });
-                return;
-            }
-        } catch (e) {
-            console.warn('[qBittorrent] Android.openPlayer failed:', e);
-        }
-
-        notify('Не удалось запустить плеер');
+        notify('Не удалось запустить плеер (startActivity недоступен)');
     }
 
     function handlePlayerButton() {
