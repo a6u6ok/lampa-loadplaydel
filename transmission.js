@@ -13,6 +13,7 @@
     var DEF_CONFIRM = true;
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
+    var DEF_PLAYER_PACKAGE = '';
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -54,6 +55,16 @@
         return defaultValue;
     }
 
+    function storeSet(key, value) {
+        try {
+            if (window.Lampa && Lampa.Storage) {
+                Lampa.Storage.set(key, value);
+            }
+        } catch (error) {
+            console.error('[qBittorrent] storeSet error:', error);
+        }
+    }
+
     function isTrue(value, defaultValue) {
         if (value === true || value === 'true') return true;
         if (value === false || value === 'false') return false;
@@ -78,7 +89,8 @@
             delete_files: isTrue(
                 storeGet('qbit_delete_files', DEF_DELETE_FILES),
                 DEF_DELETE_FILES
-            )
+            ),
+            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE)
         };
     }
 
@@ -402,6 +414,154 @@
         }
     }
 
+    // ================= ВЫБОР И ЗАПУСК ПЛЕЕРА =================
+
+    // Тестовый медиа-URL нужен только для того, чтобы Android
+    // показал системный селектор приложений, умеющих открывать video/*.
+    var TEST_VIDEO_URL =
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+
+    // Запуск приложения-плеера по пакету (без воспроизведения видео)
+    function launchByPackage(packageName) {
+        var pkg = String(packageName || '').trim();
+
+        if (!pkg) return false;
+
+        var intentUri =
+            'intent:#Intent' +
+            ';action=android.intent.action.MAIN' +
+            ';category=android.intent.category.LAUNCHER' +
+            ';package=' + pkg +
+            ';end';
+
+        debugNotify('Запускаю плеер: ' + pkg);
+
+        try {
+            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
+                AndroidJS.openUrl(intentUri);
+                return true;
+            }
+
+            if (window.Android && typeof Android.openUrl === 'function') {
+                Android.openUrl(intentUri);
+                return true;
+            }
+
+            var opened = window.open(intentUri, '_blank');
+
+            return !!opened;
+        } catch (error) {
+            console.error('[qBittorrent] player launch error:', error);
+            return false;
+        }
+    }
+
+    // Системный селектор плееров Android.
+    // Пытаемся показать список без запуска; если сборка Lampa не
+    // поддерживает PICK_ACTIVITY — фолбэк на ACTION_VIEW с тестовым видео.
+    function showSystemPlayerPicker() {
+        var viewIntent = {
+            action: 'android.intent.action.VIEW',
+            data: TEST_VIDEO_URL,
+            type: 'video/*'
+        };
+
+        var pickIntent = {
+            action: 'android.intent.action.PICK_ACTIVITY',
+            extra: {
+                'android.intent.extra.INTENT': viewIntent
+            }
+        };
+
+        // 1) PICK_ACTIVITY через startActivityForResult — без запуска приложения
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivityForResult === 'function'
+            ) {
+                AndroidJS.startActivityForResult(JSON.stringify(pickIntent));
+                notify('Выберите плеер из списка');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] startActivityForResult failed:', e);
+        }
+
+        // 2) PICK_ACTIVITY через startActivity
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                AndroidJS.startActivity(JSON.stringify(pickIntent));
+                notify('Выберите плеер из списка');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] startActivity(PICK) failed:', e);
+        }
+
+        // 3) ACTION_VIEW с пустым package — селектор появится, при выборе
+        //    плеер откроет тестовое видео (закроется после остановки)
+        try {
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.startActivity === 'function'
+            ) {
+                AndroidJS.startActivity(JSON.stringify(viewIntent));
+                notify('Выберите плеер из списка');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] startActivity(VIEW) failed:', e);
+        }
+
+        // 4) intent:// через openUrl
+        try {
+            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
+                AndroidJS.openUrl(
+                    'intent:' + TEST_VIDEO_URL +
+                    '#Intent;action=android.intent.action.VIEW;type=video/*;end'
+                );
+                notify('Выберите плеер из списка');
+                return;
+            }
+        } catch (e) {
+            console.warn('[qBittorrent] openUrl(intent) failed:', e);
+        }
+
+        // 5) Последний резерв — intent:// через location.href
+        try {
+            window.location.href =
+                'intent:' + TEST_VIDEO_URL +
+                '#Intent;action=android.intent.action.VIEW;type=video/*;end';
+            notify('Выберите плеер из списка');
+        } catch (e) {
+            console.warn('[qBittorrent] intent:// failed:', e);
+            notify('Не удалось открыть выбор плеера');
+        }
+    }
+
+    // Обработчик кнопки «▶ Открыть плеер»
+    function handlePlayerButton() {
+        var config = cfg();
+
+        // Если пакет уже сохранён — сразу запускаем приложение
+        if (config.player_package) {
+            if (launchByPackage(config.player_package)) {
+                notify('Запускаю плеер');
+                return;
+            }
+
+            // Не удалось — сбрасываем и показываем выбор
+            notify('Плеер не найден, выберите заново');
+            storeSet('qbit_player_package', '');
+        }
+
+        // Пакет не задан — открываем системный селектор
+        showSystemPlayerPicker();
+    }
+
     // ================= НАЖАТИЯ =================
 
     function bindPress(element, handler) {
@@ -590,6 +750,21 @@
                 }
             });
 
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: {
+                    name: 'qbit_player_package',
+                    type: 'input',
+                    values: '',
+                    default: DEF_PLAYER_PACKAGE
+                },
+                field: {
+                    name: 'Пакет плеера',
+                    description:
+                        'Заполняется автоматически после выбора плеера. Например org.videolan.vlc'
+                }
+            });
+
             console.log('[qBittorrent] Настройки зарегистрированы');
         } catch (error) {
             console.error('[qBittorrent] Ошибка регистрации настроек:', error);
@@ -678,6 +853,14 @@
                 }
             );
 
+            var playerButton = createButton(
+                'qbit-direct-player',
+                '▶ Открыть плеер',
+                function () {
+                    handlePlayerButton();
+                }
+            );
+
             var deleteButton = createButton(
                 'qbit-direct-delete',
                 '🗑 Удалить',
@@ -687,6 +870,7 @@
             );
 
             actions.appendChild(addButton);
+            actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
             item.appendChild(actions);
@@ -722,6 +906,12 @@
                     '}' +
                     '.qbit-direct-btn.focus{' +
                     'border-color:white;background:#51595c;' +
+                    '}' +
+                    '.qbit-direct-player{' +
+                    'background:#1f4b3a;border-color:#3fae7a;' +
+                    '}' +
+                    '.qbit-direct-player.focus{' +
+                    'background:#2c6b51;' +
                     '}' +
                     '.qbit-direct-delete{' +
                     'background:#4b2323;border-color:#ae3f3f;' +
