@@ -17,7 +17,7 @@
     var DEF_PLAYER_ASK = true;
     var DEF_DELETE_FILES = false;
 
-    var DEBUG = false;
+    var DEBUG = true;
     var ACTION_LOCK_MS = 800;
 
     var CT_FORM = {
@@ -415,6 +415,14 @@
     function openInPlayer(mediaUrl, title) {
         if (!mediaUrl) {
             notify('Нет прямой ссылки для видеоплеера');
+
+            if (DEBUG) {
+                console.log(
+                    '[qBittorrent] streamUrl отсутствует. title:',
+                    title
+                );
+            }
+
             return;
         }
 
@@ -429,30 +437,28 @@
         }
 
         var config = cfg();
-        var packageName = String(config.player_package || '').trim();
-        var alwaysAsk = config.player_ask;
 
-        var scheme = mediaUrl.match(/^https?/i)[0].toLowerCase();
-        var hostPath = mediaUrl.replace(/^https?:\/\//i, '');
+        var playerData = {
+            url: mediaUrl,
+            title: title || '',
+            card: {
+                title: title || ''
+            }
+        };
 
-        var intentUri =
-            'intent://' + hostPath +
-            '#Intent;scheme=' + scheme +
-            ';action=android.intent.action.VIEW' +
-            ';type=video/*' +
-            ';S.title=' + encodeURIComponent(title || '') +
-            ';end';
-
-        if (packageName && !alwaysAsk) {
-            intentUri += ';package=' + packageName;
-        }
+        debugNotify('Открываю ссылку в плеере: ' + mediaUrl);
 
         try {
-            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
-                AndroidJS.openUrl(intentUri);
+            // Основной способ для современных сборок Lampa
+            if (
+                window.Lampa &&
+                Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function'
+            ) {
+                Lampa.Android.openPlayer(mediaUrl, playerData);
 
                 notify(
-                    packageName && !alwaysAsk
+                    config.player_package && !config.player_ask
                         ? 'Открываю в выбранном плеере'
                         : 'Выбери видеоплеер'
                 );
@@ -460,11 +466,15 @@
                 return;
             }
 
-            if (window.Android && typeof Android.openUrl === 'function') {
-                Android.openUrl(intentUri);
+            // Прямой вызов Android-моста Lampa
+            if (
+                window.AndroidJS &&
+                typeof AndroidJS.openPlayer === 'function'
+            ) {
+                AndroidJS.openPlayer(mediaUrl, JSON.stringify(playerData));
 
                 notify(
-                    packageName && !alwaysAsk
+                    config.player_package && !config.player_ask
                         ? 'Открываю в выбранном плеере'
                         : 'Выбери видеоплеер'
                 );
@@ -472,17 +482,23 @@
                 return;
             }
 
-            var opened = window.open(intentUri, '_blank');
+            // Старый интерфейс Lampa
+            if (
+                window.Android &&
+                typeof Android.openPlayer === 'function'
+            ) {
+                Android.openPlayer(mediaUrl, playerData);
 
-            if (opened) {
                 notify(
-                    packageName && !alwaysAsk
+                    config.player_package && !config.player_ask
                         ? 'Открываю в выбранном плеере'
                         : 'Выбери видеоплеер'
                 );
-            } else {
-                notify('Не удалось открыть видеоплеер');
+
+                return;
             }
+
+            notify('Android-мост плеера недоступен в этой сборке Lampa');
         } catch (error) {
             console.error('[qBittorrent] player open error:', error);
             notify('Ошибка запуска видеоплеера');
@@ -664,7 +680,7 @@
                 },
                 field: {
                     name: 'Плеер по умолчанию',
-                    description: 'Пакет плеера. Пусто = всегда выбирать из установленных'
+                    description: 'Пакет плеера. Пусто = системный выбор плеера'
                 }
             });
 
@@ -775,6 +791,13 @@
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title = data.Title || data.title || '';
             var streamUrl = getStreamUrl(data);
+
+            if (DEBUG) {
+                console.log(
+                    '[qBittorrent] torrent card data:',
+                    data
+                );
+            }
 
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
