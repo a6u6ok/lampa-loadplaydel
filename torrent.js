@@ -322,51 +322,42 @@
         }
     }
 
-    // ================= ОТКРЫТИЕ ПЛЕЕРА =================
-    // Просто запускает приложение плеера по пакету без передачи файлов
+    // ================= СИСТЕМНЫЙ ПРОВОДНИК =================
 
-    function launchPlayerApp() {
-        var config = cfg();
-        var pkg = String(config.player_package || '').trim();
+    function pickFileFromSystem() {
+        debugNotify('Открываю системный проводник...');
+        
+        // Пытаемся открыть системный файловый менеджер через Intent
+        var intent = {
+            action: 'android.intent.action.GET_CONTENT',
+            type: 'video/*',
+            category: 'android.intent.category.OPENABLE'
+        };
 
-        if (!pkg || pkg === 'custom') {
-            console.warn('[qBittorrent] Player not selected');
-            notify('Плеер не выбран');
-            return;
+        try {
+            if (window.AndroidJS && typeof AndroidJS.startActivityForResult === 'function') {
+                AndroidJS.startActivityForResult(JSON.stringify(intent));
+                return;
+            }
+        } catch (e) {
+            console.error('[qBittorrent] startActivityForResult error:', e);
         }
 
-        debugNotify('Запускаю приложение плеера: ' + pkg);
-
+        // Если startActivityForResult нет, открываем просто файловый менеджер
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.MAIN',
-                    category: 'android.intent.category.LAUNCHER',
-                    package: pkg
-                }));
+                var intentOpen = {
+                    action: 'android.intent.action.OPEN_DOCUMENT',
+                    type: 'video/*'
+                };
+                AndroidJS.startActivity(JSON.stringify(intentOpen));
                 return;
             }
         } catch (e) {
-            console.error('[qBittorrent] AndroidJS.startActivity error:', e);
+            console.error('[qBittorrent] startActivity error:', e);
         }
-
-        try {
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer('', pkg, '', '');
-                return;
-            }
-        } catch (e) {
-            console.error('[qBittorrent] AndroidJS.openPlayer error:', e);
-        }
-
-        try {
-            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer('', { package: pkg, title: '' });
-                return;
-            }
-        } catch (e) {
-            console.error('[qBittorrent] Lampa.Android.openPlayer error:', e);
-        }
+        
+        notify('Не удалось открыть проводник');
     }
 
     // ================= НАЖАТИЯ =================
@@ -475,7 +466,7 @@
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
-                field: { name: 'Видеоплеер', description: 'Выберите плеер, который откроется' }
+                field: { name: 'Видеоплеер', description: 'Выберите плеер' }
             });
 
             console.log('[qBittorrent] Настройки зарегистрированы');
@@ -597,9 +588,13 @@
                 });
             });
 
-            // Кнопка Открыть (запускает приложение плеера)
+            // Новая кнопка выбора файла через проводник
+            var pickFileButton = createButton('qbit-direct-pick', '📁 Выбрать файл', function () {
+                pickFileFromSystem();
+            });
+
             var playerButton = createButton('qbit-direct-player', '▶ Открыть', function () {
-                launchPlayerApp();
+                pickFileFromSystem(); // Переиспользуем вызов проводника
             });
 
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
@@ -612,6 +607,7 @@
             }
 
             actions.appendChild(addButton);
+            actions.appendChild(pickFileButton);
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
@@ -637,6 +633,8 @@
                     '.qbit-direct-btn.focus{border-color:white;background:#51595c;}' +
                     '.qbit-direct-add{background:#1f4b3a;border-color:#3fae7a;}' +
                     '.qbit-direct-add.focus{background:#2c6b51;}' +
+                    '.qbit-direct-pick{background:#5a3a1f;border-color:#e0a34a;}' +
+                    '.qbit-direct-pick.focus{background:#7a5a2f;}' +
                     '.qbit-direct-player{background:#2a3a4a;border-color:#5a8ab0;}' +
                     '.qbit-direct-player.focus{background:#3a5a7a;}' +
                     '.qbit-direct-delete{background:#4b2323;border-color:#ae3f3f;}' +
