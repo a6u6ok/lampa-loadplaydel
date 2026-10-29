@@ -19,7 +19,7 @@
     var DEF_CONFIRM = true;
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
-    var DEF_PLAYER_PACKAGE = '';
+    var DEF_FILEMANAGER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
     var DEF_ALWAYS_SHOW_BUTTONS = false; 
 
@@ -31,18 +31,18 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    var PLAYERS_LIST = {
+    // Список файловых менеджеров
+    var FILEMANAGERS_LIST = {
         '': 'Не выбран',
-        'top.rootu.dddplayer': 'DDD Video Player',
-        'org.videolan.vlc': 'VLC',
-        'com.mxtech.videoplayer.ad': 'MX Player',
-        'net.gtvbox.videoplayer': 'Vimu Player',
-        'com.brouken.player': 'Just (Video) Player',
-        'org.xbmc.kodi': 'Kodi',
-        'com.newin.nplayer.pro': 'nPlayer',
-        'com.xplayer.player': 'Xplayer',
-        'org.courville.nova': 'Nova Video Player',
-        'com.archos.mediacenter.video': 'Archos Video Player',
+        'com.android.documentsui': 'Файловый менеджер Android',
+        'com.mi.android.globalFileexplorer': 'Проводник (Xiaomi)',
+        'com.google.android.documentsui': 'Files by Google',
+        'com.ghisler.android.TotalCommander': 'Total Commander',
+        'com.estrongs.android.pop': 'ES Проводник',
+        'com.speedsoftware.rootexplorer': 'Root Explorer',
+        'com.lonelycatgames.Xplore': 'X-plore',
+        'com.mxtech.videoplayer.ad': 'MX Player (встроенный)',
+        'com.filemanager.plus': 'Файловый менеджер +',
         'custom': 'Другой (ввести вручную)'
     };
 
@@ -94,7 +94,7 @@
             confirm: isTrue(storeGet('qbit_confirm', DEF_CONFIRM), DEF_CONFIRM),
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', DEF_AUTO_CAT_PATH), DEF_AUTO_CAT_PATH),
             delete_files: isTrue(storeGet('qbit_delete_files', DEF_DELETE_FILES), DEF_DELETE_FILES),
-            player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
+            filemanager_package: storeGet('qbit_filemanager_package', DEF_FILEMANAGER_PACKAGE),
             smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
             always_show_buttons: isTrue(storeGet('qbit_always_show_buttons', DEF_ALWAYS_SHOW_BUTTONS), DEF_ALWAYS_SHOW_BUTTONS)
         };
@@ -334,43 +334,25 @@
         }
     }
 
-    // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
+    // ================= ЗАПУСК ФАЙЛОВОГО МЕНЕДЖЕРА =================
 
-    function openFileInPlayer(fileUri, playerPkg) {
-        var uri = String(fileUri || '').trim();
-        var pkg = String(playerPkg || '').trim();
+    function launchFileManager() {
+        var config = cfg();
+        var pkg = String(config.filemanager_package || '').trim();
 
-        if (!uri) {
-            console.warn('[qBittorrent] Empty SMB path');
+        if (!pkg || pkg === 'custom') {
+            console.warn('[qBittorrent] File manager not selected');
+            notify('Файловый менеджер не выбран');
             return;
         }
 
-        debugNotify('Открываю: ' + uri + ' (' + (pkg || 'выбор') + ')');
-
-        try {
-            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
-                return;
-            }
-        } catch (e) {
-            console.error('[qBittorrent] Lampa.Android.openPlayer error:', e);
-        }
-
-        try {
-            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(uri, pkg, '', 'video/*');
-                return;
-            }
-        } catch (e) {
-            console.error('[qBittorrent] AndroidJS.openPlayer error:', e);
-        }
+        debugNotify('Запускаю файловый менеджер: ' + pkg);
 
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: 'video/*',
+                    action: 'android.intent.action.MAIN',
+                    category: 'android.intent.category.LAUNCHER',
                     package: pkg
                 }));
                 return;
@@ -380,24 +362,19 @@
         }
 
         try {
-            if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(uri, { package: pkg, title: '' });
+            if (window.Lampa && Lampa.Android && typeof Lampa.Android.startActivity === 'function') {
+                Lampa.Android.startActivity(JSON.stringify({
+                    action: 'android.intent.action.MAIN',
+                    category: 'android.intent.category.LAUNCHER',
+                    package: pkg
+                }));
                 return;
             }
         } catch (e) {
-            console.error('[qBittorrent] Android.openPlayer error:', e);
+            console.error('[qBittorrent] Lampa.Android.startActivity error:', e);
         }
-
-        console.error('[qBittorrent] Could not open player');
-    }
-
-    function handlePlayerButton() {
-        var config = cfg();
-        if (!config.player_package || config.player_package === 'custom') {
-            console.warn('[qBittorrent] Player not selected');
-            return;
-        }
-        openFileInPlayer(config.smb_file, config.player_package);
+        
+        notify('Не удалось запустить файловый менеджер');
     }
 
     // ================= НАЖАТИЯ =================
@@ -498,15 +475,16 @@
                 component: 'qbit_direct',
                 param: { name: 'qbit_always_show_buttons', type: 'trigger', default: DEF_ALWAYS_SHOW_BUTTONS },
                 field: { 
-                    name: 'Всегда показывать Плеер и Удалить', 
+                    name: 'Всегда показывать Открыть и Удалить', 
                     description: 'Не скрывать кнопки и не менять текст кнопки добавления на проценты' 
                 }
             });
 
+            // Выбор файлового менеджера вместо плеера
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
-                param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
-                field: { name: 'Видеоплеер', description: 'Выберите плеер' }
+                param: { name: 'qbit_filemanager_package', type: 'select', values: FILEMANAGERS_LIST, default: '' },
+                field: { name: 'Файловый менеджер', description: 'Выберите приложение для кнопки "Открыть"' }
             });
 
             Lampa.SettingsApi.addParam({
@@ -601,7 +579,6 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Кнопка добавления "qB qBittorrent"
             var addButton = createButton('qbit-direct-add', 'qB qBittorrent', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
@@ -635,9 +612,9 @@
                 });
             });
 
-            // Кнопка плеера "▶ Плеер" (без слова Открыть)
-            var playerButton = createButton('qbit-direct-player', '▶ Плеер', function () {
-                handlePlayerButton();
+            // Кнопка "Открыть" для запуска файлового менеджера
+            var playerButton = createButton('qbit-direct-player', '📁 Открыть', function () {
+                launchFileManager();
             });
 
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
