@@ -21,8 +21,8 @@
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
     var DEF_PLAYER_PATH = '';
-    var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
-    var DEF_ALWAYS_SHOW = true; // По умолчанию для удобства на Google TV ставим true
+    var DEF_SMB_FILE = 'smb://192.168.1.50/download/';
+    var DEF_ALWAYS_SHOW = true;
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -286,36 +286,6 @@
         return body;
     }
 
-    function checkTorrentProgress(hash, callback) {
-        makeApiRequest('/api/v2/torrents/info?hashes=' + hash, 'GET', '', function (response) {
-            try {
-                if (!response) {
-                    callback(false, 0, 'Пустой ответ от сервера');
-                    return;
-                }
-                var data = JSON.parse(response);
-                if (Array.isArray(data) && data.length > 0) {
-                    var torrent = data[0];
-                    var prog = torrent.progress;
-                    var st = torrent.state;
-                    
-                    var isCompleted = (prog >= 1) || 
-                                      (st === 'completed') || 
-                                      (st.indexOf('UP') !== -1) || 
-                                      (st === 'pausedUP') || 
-                                      (st === 'stalledUP') || 
-                                      (st === 'checkingUP');
-
-                    callback(isCompleted, prog, st);
-                } else {
-                    callback(false, 0, 'Торрент не найден в qBittorrent');
-                }
-            } catch (e) {
-                callback(false, 0, 'Ошибка разбора ответа');
-            }
-        });
-    }
-
     function qbAdd(magnet, title, onAdded) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
             notify('Magnet-ссылка не найдена');
@@ -338,7 +308,8 @@
         });
     }
 
-    function qbDelete(magnet, onSuccess) {
+    // Восстановлена надежная функция удаления из первоначального кода
+    function qbDelete(magnet) {
         var hash = magnetHash(magnet);
         if (!hash) {
             notify('Не удалось определить hash торрента');
@@ -349,10 +320,38 @@
         var body = 'hashes=' + encodeURIComponent(hash) + '&deleteFiles=' + (config.delete_files ? 'true' : 'false');
         debugNotify('Удаляю торрент из qBittorrent...');
 
-        makeApiRequest('/api/v2/torrents/delete', 'POST', body, function (response) {
+        function finishDelete(response) {
+            console.log('[qBittorrent] delete response:', response);
+            if (response === null || response === undefined) {
+                blindRequest(base() + '/api/v2/torrents/delete', 'POST', body);
+                return;
+            }
+            if (/Forbidden|403/i.test(response)) {
+                notify('qBittorrent: 403. Проверь доступ к Web UI');
+                return;
+            }
             notify(config.delete_files ? 'Торрент и файлы удалены с роутера' : 'Торрент удалён из qBittorrent');
-            if (typeof onSuccess === 'function') onSuccess();
-        });
+        }
+
+        function deleteRequest() {
+            nativeRequest({
+                url: base() + '/api/v2/torrents/delete',
+                method: 'POST',
+                body: body,
+                headers: CT_FORM
+            }, finishDelete);
+        }
+
+        if (!config.bypass && config.user) {
+            nativeRequest({
+                url: base() + '/api/v2/auth/login',
+                method: 'POST',
+                body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
+                headers: CT_FORM
+            }, deleteRequest);
+        } else {
+            deleteRequest();
+        }
     }
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
@@ -456,7 +455,7 @@
                 { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Проверять добавление', desc: 'Проверка хэша' },
                 { name: 'qbit_delete_files', type: 'trigger', def: DEF_DELETE_FILES, title: 'Удалять файлы с диска', desc: 'При удалении торрента' },
                 { name: 'qbit_always_show', type: 'trigger', def: DEF_ALWAYS_SHOW, title: 'Всегда показывать кнопки управления', desc: 'Не ждать опроса 100% статуса (рекомендуется для роутера)' },
-                { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к папке/файлу', desc: 'Например smb://192.168.1.50/Media/' }
+                { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к папке/файлу', desc: 'Например smb://192.168.1.50/download/' }
             ];
 
             params.forEach(function (p) {
@@ -527,59 +526,21 @@
             actions.setAttribute('data-hash', hash);
 
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
-                qbAdd(magnet, title, function () {
-                    if (!config.always_show) startPolling();
-                });
+                qbAdd(magnet, title);
             });
 
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
                 handlePlayerButton();
             });
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
-                qbDelete(magnet, function () {
-                    if (!config.always_show) {
-                        playerButton.style.display = 'none';
-                        deleteButton.style.display = 'none';
-                    }
-                });
+                qbDelete(magnet);
             });
-
-            if (!config.always_show) {
-                playerButton.style.display = 'none';
-                deleteButton.style.display = 'none';
-            }
 
             actions.appendChild(addButton);
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
             item.appendChild(actions);
-
-            var pollTimer = null;
-            function startPolling() {
-                if (pollTimer) clearInterval(pollTimer);
-                checkStatus();
-                pollTimer = setInterval(checkStatus, 5000);
-            }
-
-            function checkStatus() {
-                checkTorrentProgress(hash, function (isCompleted, progress, state) {
-                    if (isCompleted) {
-                        playerButton.style.display = 'inline-flex';
-                        deleteButton.style.display = 'inline-flex';
-                        addButton.textContent = '⬇ В qBittorrent (Скачано)';
-                        if (pollTimer) clearInterval(pollTimer);
-                    } else {
-                        if (progress > 0 && progress < 1) {
-                            addButton.textContent = '⬇ Скачивание: ' + Math.round(progress * 100) + '% (' + state + ')';
-                        }
-                    }
-                });
-            }
-
-            if (!config.always_show) {
-                startPolling();
-            }
         });
     }
 
