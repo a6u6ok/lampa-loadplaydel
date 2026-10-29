@@ -23,9 +23,11 @@
     var DEF_SMB_FILE = 'smb://192.168.1.50/download/';
     var DEF_ALWAYS_SHOW = true;
 
+    // Поставьте true, если нужно видеть технические уведомления.
     var DEBUG = false;
+
     var ACTION_LOCK_MS = 1200;
-    var CONFIRM_ATTEMPTS = 6;
+    var CONFIRM_ATTEMPTS = 8;
     var CONFIRM_DELAY_MS = 1500;
 
     var CT_FORM = {
@@ -255,6 +257,40 @@
         });
     }
 
+    // ================= РАЗБОР ОТВЕТОВ =================
+
+    function extractJson(response) {
+        if (!response) return null;
+
+        if (typeof response === 'object') return response;
+
+        var text = String(response).trim();
+
+        try {
+            return JSON.parse(text);
+        } catch (error) {}
+
+        var start = text.indexOf('[');
+        var end = text.lastIndexOf(']');
+
+        if (start !== -1 && end > start) {
+            try {
+                return JSON.parse(text.substring(start, end + 1));
+            } catch (error) {}
+        }
+
+        start = text.indexOf('{');
+        end = text.lastIndexOf('}');
+
+        if (start !== -1 && end > start) {
+            try {
+                return JSON.parse(text.substring(start, end + 1));
+            } catch (error) {}
+        }
+
+        return null;
+    }
+
     // ================= АВТОРИЗАЦИЯ =================
 
     function apiHeaders() {
@@ -395,33 +431,99 @@
         return body;
     }
 
-    function verifyTorrent(hash, attempts, callback) {
-        if (!hash) {
-            callback(false);
-            return;
+    // ================= ПОИСК ТОРРЕНТА =================
+
+    function normalizeText(value) {
+        return String(value || '').toLowerCase().trim();
+    }
+
+    function findTorrentByMagnet(torrents, magnet, fallbackTitle) {
+        if (!Array.isArray(torrents)) return null;
+
+        var magnetLower = normalizeText(magnet);
+        var magnetBase = magnetLower ? magnetLower.split('&')[0] : '';
+        var titleLower = normalizeText(fallbackTitle);
+
+        for (var i = 0; i < torrents.length; i++) {
+            var torrent = torrents[i];
+
+            if (!torrent) continue;
+
+            var torrentMagnet = normalizeText(torrent.magnet_uri);
+            var torrentHash = normalizeText(torrent.hash);
+            var torrentV1 = normalizeText(torrent.infohash_v1);
+            var torrentV2 = normalizeText(torrent.infohash_v2);
+            var torrentName = normalizeText(torrent.name);
+
+            // 1. Самый надёжный способ: сравнение magnet_uri.
+            if (magnetBase && torrentMagnet && torrentMagnet.indexOf(magnetBase) !== -1) {
+                return torrent;
+            }
+
+            // 2. Сравнение всех доступных идентификаторов.
+            if (
+                (torrentHash && magnetLower.indexOf(torrentHash) !== -1) ||
+                (torrentV1 && magnetLower.indexOf(torrentV1) !== -1) ||
+                (torrentV2 && magnetLower.indexOf(torrentV2) !== -1)
+            ) {
+                return torrent;
+            }
+
+            // 3. Резервный способ: точное совпадение названия.
+            if (titleLower && torrentName && torrentName === titleLower) {
+                return torrent;
+            }
         }
 
-        if (attempts <= 0) {
-            callback(false);
-            return;
-        }
+        return null;
+    }
 
+    function getTorrentList(callback) {
+        makeApiRequest('/api/v2/torrents/info', 'GET', '', function (response) {
+            var torrents = extractJson(response);
+
+            callback(Array.isArray(torrents) ? torrents : []);
+        });
+    }
+
+    function getTorrentStatus(magnet, fallbackTitle, callback) {
+        getTorrentList(function (torrents) {
+            callback(findTorrentByMagnet(torrents, magnet, fallbackTitle));
+        });
+    }
+
+    function getTorrentFiles(hash, callback) {
         makeApiRequest(
-            '/api/v2/torrents/info?hashes=' + encodeURIComponent(hash),
+            '/api/v2/torrents/files?hash=' + encodeURIComponent(hash),
             'GET',
             '',
             function (response) {
-                if (response && response.indexOf(hash) !== -1) {
-                    callback(true);
-                    return;
-                }
+                var files = extractJson(response);
 
-                setTimeout(function () {
-                    verifyTorrent(hash, attempts - 1, callback);
-                }, CONFIRM_DELAY_MS);
+                callback(Array.isArray(files) ? files : []);
             }
         );
     }
+
+    function verifyTorrent(magnet, fallbackTitle, attempts, callback) {
+        if (attempts <= 0) {
+            callback(false, null);
+            return;
+        }
+
+        getTorrentStatus(magnet, fallbackTitle, function (torrent) {
+            if (torrent) {
+                callback(true, torrent);
+                return;
+            }
+
+            setTimeout(function () {
+                verifyTorrent(magnet, fallbackTitle, attempts - 1, callback);
+            }, CONFIRM_DELAY_MS);
+        });
+    }
+
+    // ================= ДОБАВЛЕНИЕ И УДАЛЕНИЕ =================
 
     function qbAdd(magnet, title, onAdded) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
@@ -431,7 +533,6 @@
 
         var config = cfg();
         var body = buildAddBody(magnet, title);
-        var hash = magnetHash(magnet);
 
         debugNotify('Отправляю торрент в qBittorrent...');
 
@@ -452,12 +553,12 @@
                 return;
             }
 
-            if (config.confirm && hash) {
-                verifyTorrent(hash, CONFIRM_ATTEMPTS, function (found) {
+            if (config.confirm) {
+                verifyTorrent(magnet, title, CONFIRM_ATTEMPTS, function (found, torrent) {
                     if (found) {
                         notify('Торрент добавлен и подтверждён в qBittorrent ✓');
 
-                        if (typeof onAdded === 'function') onAdded();
+                        if (typeof onAdded === 'function') onAdded(torrent);
                     } else {
                         notify('qBittorrent: торрент не найден после добавления');
                     }
@@ -507,53 +608,7 @@
         });
     }
 
-    // ================= ФАЙЛЫ И СТАТУС ТОРРЕНТА =================
-
-    function getTorrentStatus(hash, callback) {
-        makeApiRequest(
-            '/api/v2/torrents/info?hashes=' + encodeURIComponent(hash),
-            'GET',
-            '',
-            function (response) {
-                if (!response) {
-                    callback(null);
-                    return;
-                }
-
-                try {
-                    var torrents = JSON.parse(response);
-
-                    callback(torrents && torrents[0] ? torrents[0] : null);
-                } catch (error) {
-                    console.error('[qBittorrent] Ошибка разбора статуса:', error);
-                    callback(null);
-                }
-            }
-        );
-    }
-
-    function getTorrentFiles(hash, callback) {
-        makeApiRequest(
-            '/api/v2/torrents/files?hash=' + encodeURIComponent(hash),
-            'GET',
-            '',
-            function (response) {
-                if (!response) {
-                    callback([]);
-                    return;
-                }
-
-                try {
-                    var files = JSON.parse(response);
-
-                    callback(Array.isArray(files) ? files : []);
-                } catch (error) {
-                    console.error('[qBittorrent] Ошибка разбора файлов:', error);
-                    callback([]);
-                }
-            }
-        );
-    }
+    // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
     function pickBestVideoFile(files) {
         var videos = files.filter(function (file) {
@@ -575,8 +630,6 @@
 
         return root + '/' + path;
     }
-
-    // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
     function openFileInPlayer(fileUri, playerPkg, fileName) {
         var pkg = String(playerPkg || '').trim();
@@ -623,27 +676,21 @@
 
     function handlePlayerButton(magnet, fallbackTitle) {
         var config = cfg();
-        var hash = magnetHash(magnet);
 
         if (!config.player_package || config.player_package === 'custom') {
             notify('Плеер не выбран в настройках.');
             return;
         }
 
-        if (!hash) {
-            notify('Не удалось определить hash торрента');
-            return;
-        }
+        notify('Ищу торрент в qBittorrent...');
 
-        notify('Ищу видеофайл в qBittorrent...');
-
-        getTorrentStatus(hash, function (torrent) {
+        getTorrentStatus(magnet, fallbackTitle, function (torrent) {
             if (!torrent) {
                 notify('Торрент не найден в qBittorrent');
                 return;
             }
 
-            var state = String(torrent.state || '').toLowerCase();
+            var state = normalizeText(torrent.state);
 
             if (
                 state.indexOf('downloading') !== -1 ||
@@ -656,7 +703,7 @@
                 return;
             }
 
-            getTorrentFiles(hash, function (files) {
+            getTorrentFiles(torrent.hash, function (files) {
                 var relativeFile = pickBestVideoFile(files);
 
                 if (!relativeFile) {
@@ -781,7 +828,7 @@
                     type: 'trigger',
                     def: DEF_CONFIRM,
                     title: 'Проверять добавление',
-                    desc: 'Искать торрент по hash после добавления'
+                    desc: 'Искать торрент после добавления'
                 },
                 {
                     name: 'qbit_delete_files',
