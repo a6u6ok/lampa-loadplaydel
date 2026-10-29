@@ -355,10 +355,10 @@
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    function openFileInPlayer(fileUri, playerPkg, torrentTitle) {
+    function openFileInPlayer(fileUri, playerPkg, fileName) {
         var baseUri = String(fileUri || '').trim().replace(/\/+$/, '');
         var pkg = String(playerPkg || '').trim();
-        var title = String(torrentTitle || '').trim();
+        var targetFile = String(fileName || '').trim();
 
         if (!baseUri) {
             notify('Укажите SMB-путь к файлу в настройках qBittorrent');
@@ -366,31 +366,23 @@
         }
 
         var finalUri = baseUri;
-        if (title) {
-            // Проверяем, содержит ли название точное имя файла с расширением (например, содержит точку и расширение на конце)
-            var hasExtension = /\.[0-9a-z]{2,4}$/i.test(title);
-            
-            if (hasExtension) {
-                // Если в названии уже есть расширение (например Street.Fighter.2026.TS.mp4), используем его целиком
-                finalUri = baseUri + '/' + encodeURIComponent(title);
-            } else {
-                // Если расширения нет, подставляем .mkv по умолчанию
-                finalUri = baseUri + '/' + encodeURIComponent(title) + '.mkv';
-            }
+        if (targetFile) {
+            // Подставляем конкретное имя файла (например Street.Fighter.2026.TS.mp4) напрямую к SMB-пути
+            finalUri = baseUri + '/' + encodeURIComponent(targetFile);
         }
 
         debugNotify('Открываю в плеере: ' + finalUri);
 
         try {
             if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer(finalUri, { package: pkg, title: title });
+                Lampa.Android.openPlayer(finalUri, { package: pkg, title: targetFile });
                 return;
             }
         } catch (e) {}
 
         try {
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(finalUri, pkg, title, 'video/*');
+                AndroidJS.openPlayer(finalUri, pkg, targetFile, 'video/*');
                 return;
             }
         } catch (e) {}
@@ -409,7 +401,7 @@
 
         try {
             if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(finalUri, { package: pkg, title: title });
+                Android.openPlayer(finalUri, { package: pkg, title: targetFile });
                 return;
             }
         } catch (e) {}
@@ -417,13 +409,13 @@
         notify('Не удалось открыть файл в плеере');
     }
 
-    function handlePlayerButton(title) {
+    function handlePlayerButton(fileName) {
         var config = cfg();
         if (!config.player_package || config.player_package === 'custom') {
             notify('Плеер не выбран в настройках.');
             return;
         }
-        openFileInPlayer(config.smb_file, config.player_package, title);
+        openFileInPlayer(config.smb_file, config.player_package, fileName);
     }
 
     // ================= НАЖАТИЯ =================
@@ -528,7 +520,10 @@
             var data = event.element || {};
 
             var magnet = data.MagnetUri || data.magnetUri || '';
-            var title = data.Title || data.title || '';
+            
+            // Ищем точное имя файла в данных торрента, иначе берем заголовок
+            var fileName = data.file || data.filename || data.name || data.Title || data.title || '';
+            
             var hash = magnetHash(magnet);
 
             if (!item || !hash) return;
@@ -539,11 +534,11 @@
             actions.setAttribute('data-hash', hash);
 
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
-                qbAdd(magnet, title);
+                qbAdd(magnet, fileName);
             });
 
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
-                handlePlayerButton(title);
+                handlePlayerButton(fileName);
             });
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
                 qbDelete(magnet);
