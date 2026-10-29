@@ -15,8 +15,6 @@
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
-    
-    // Новая настройка: всегда показывать кнопки плеера и удаления
     var DEF_ALWAYS_SHOW_BUTTONS = false; 
 
     var DEBUG = true;
@@ -558,15 +556,12 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Создаем кнопки
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
                 if (alwaysShow) {
-                    // Если включен режим постоянного отображения, просто добавляем без процентов
                     qbAdd(magnet, title);
                     return;
                 }
 
-                // Иначе — логика с прогрессом
                 addButton.textContent = '⏳ 0%';
                 addButton.classList.add('qbit-loading');
                 
@@ -602,7 +597,6 @@
                 qbDelete(magnet);
             });
 
-            // Управляем видимостью в зависимости от настройки
             if (!alwaysShow) {
                 playerButton.style.display = 'none';
                 deleteButton.style.display = 'none';
@@ -613,6 +607,25 @@
             actions.appendChild(deleteButton);
 
             item.appendChild(actions);
+        });
+    }
+
+    // ================= ТЕСТ HTTP ЗАПРОСА =================
+    function testHttpRequest() {
+        var testUrl = base() + '/api/v2/app/version';
+        console.log('[qBittorrent TEST] Отправка запроса на: ' + testUrl);
+
+        nativeRequest({
+            url: testUrl,
+            method: 'GET'
+        }, function (response) {
+            if (response === null || response === undefined) {
+                console.error('[qBittorrent TEST] ОШИБКА: Ответ не получен (null).');
+                notify('ТЕСТ: Ответ не получен');
+            } else {
+                console.log('[qBittorrent TEST] УСПЕХ! Ответ сервера: ' + response);
+                notify('ТЕСТ: ' + response);
+            }
         });
     }
 
@@ -642,6 +655,10 @@
                 document.head.appendChild(style);
             }
             console.log('[qBittorrent] Плагин загружен');
+
+            // Запускаем тест через 5 секунд
+            setTimeout(testHttpRequest, 5000);
+
         } catch (error) {
             console.error('[qBittorrent] Ошибка инициализации:', error);
         }
