@@ -21,6 +21,7 @@
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
+    var DEF_ALWAYS_SHOW = false; // По умолчанию скрывать до 100%
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -110,7 +111,8 @@
                 DEF_DELETE_FILES
             ),
             player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
-            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE)
+            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
+            always_show: isTrue(storeGet('qbit_always_show', DEF_ALWAYS_SHOW), DEF_ALWAYS_SHOW)
         };
     }
 
@@ -226,7 +228,6 @@
                 headers: CT_FORM
             }, function (response) {
                 if (response && /Forbidden|403|401/i.test(response) && !config.bypass && config.user) {
-                    // Пробуем переавторизоваться и повторить
                     nativeRequest({
                         url: base() + '/api/v2/auth/login',
                         method: 'POST',
@@ -288,20 +289,28 @@
         makeApiRequest('/api/v2/torrents/info?hashes=' + hash, 'GET', '', function (response) {
             try {
                 if (!response) {
-                    callback(false);
+                    callback(false, 0, 'Пустой ответ от сервера');
                     return;
                 }
                 var data = JSON.parse(response);
                 if (Array.isArray(data) && data.length > 0) {
                     var torrent = data[0];
-                    // Прогресс 1.0 означает 100% скачивания
-                    var isCompleted = torrent.progress === 1 || torrent.state === 'completed' || torrent.state === 'pausedUP' || torrent.state === 'stalledUP' || torrent.state === 'uploading';
-                    callback(isCompleted, torrent.progress);
+                    var prog = torrent.progress;
+                    var st = torrent.state;
+                    
+                    var isCompleted = (prog >= 1) || 
+                                      (st === 'completed') || 
+                                      (st.indexOf('UP') !== -1) || 
+                                      (st === 'pausedUP') || 
+                                      (st === 'stalledUP') || 
+                                      (st === 'checkingUP');
+
+                    callback(isCompleted, prog, st);
                 } else {
-                    callback(false);
+                    callback(false, 0, 'Торрент не найден в qBittorrent');
                 }
             } catch (e) {
-                callback(false);
+                callback(false, 0, 'Ошибка разбора ответа');
             }
         });
     }
@@ -445,6 +454,7 @@
                 { name: 'qbit_rename', type: 'trigger', def: DEF_RENAME, title: 'Переименовывать торрент', desc: 'Использовать название раздачи как имя торрента' },
                 { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Проверять добавление', desc: 'Проверять, появился ли торрент в qBittorrent' },
                 { name: 'qbit_delete_files', type: 'trigger', def: DEF_DELETE_FILES, title: 'Удалять файлы торрента', desc: 'При удалении также удалять скачанные файлы' },
+                { name: 'qbit_always_show', type: 'trigger', def: DEF_ALWAYS_SHOW, title: 'Всегда показывать кнопки управления', desc: 'Показывать плеер и удаление сразу, не дожидаясь 100% скачивания' },
                 { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к файлу или папке', desc: 'Например: smb://192.168.1.50/Media/Movie.mkv' }
             ];
 
@@ -510,30 +520,34 @@
             if (!item || !hash) return;
             if (item.querySelector('.qbit-direct-actions[data-hash="' + hash + '"]')) return;
 
+            var config = cfg();
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
             actions.setAttribute('data-hash', hash);
 
-            // Кнопка «В qBittorrent» видна всегда
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
                 qbAdd(magnet, title, function () {
-                    startPolling();
+                    if (!config.always_show) startPolling();
                 });
             });
 
-            // Кнопки плеера и удаления изначально скрываем
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
                 handlePlayerButton();
             });
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
                 qbDelete(magnet, function () {
-                    playerButton.style.display = 'none';
-                    deleteButton.style.display = 'none';
+                    if (!config.always_show) {
+                        playerButton.style.display = 'none';
+                        deleteButton.style.display = 'none';
+                    }
                 });
             });
 
-            playerButton.style.display = 'none';
-            deleteButton.style.display = 'none';
+            // Если настройка "Всегда показывать" включена, показываем сразу. Иначе — скрываем до 100%.
+            if (!config.always_show) {
+                playerButton.style.display = 'none';
+                deleteButton.style.display = 'none';
+            }
 
             actions.appendChild(addButton);
             actions.appendChild(playerButton);
@@ -541,33 +555,32 @@
 
             item.appendChild(actions);
 
-            // Периодическая проверка статуса загрузки торрента в qBittorrent
             var pollTimer = null;
             function startPolling() {
                 if (pollTimer) clearInterval(pollTimer);
-                
-                // Проверяем сразу и затем каждые 5 секунд
                 checkStatus();
                 pollTimer = setInterval(checkStatus, 5000);
             }
 
             function checkStatus() {
-                checkTorrentProgress(hash, function (isCompleted, progress) {
+                checkTorrentProgress(hash, function (isCompleted, progress, state) {
                     if (isCompleted) {
                         playerButton.style.display = 'inline-flex';
                         deleteButton.style.display = 'inline-flex';
+                        addButton.textContent = '⬇ В qBittorrent (Скачано)';
                         if (pollTimer) clearInterval(pollTimer);
                     } else {
-                        // Если еще качается, можно опционально выводить прогресс в текст кнопки добавления или лог
                         if (progress > 0 && progress < 1) {
-                            addButton.textContent = '⬇ Скачивание: ' + Math.round(progress * 100) + '%';
+                            addButton.textContent = '⬇ Скачивание: ' + Math.round(progress * 100) + '% (' + state + ')';
                         }
                     }
                 });
             }
 
-            // Запускаем проверку при открытии карточки (вдруг торрент уже скачан раннее)
-            startPolling();
+            // Запускаем опрос только если выключен режим "всегда показывать"
+            if (!config.always_show) {
+                startPolling();
+            }
         });
     }
 
