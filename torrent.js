@@ -367,9 +367,16 @@
 
         var finalUri = baseUri;
         if (title) {
-            var cleanTitle = title.replace(/[<>:"/\\|?*]/g, '').trim();
-            // Сразу файл в корне указанной SMB-папки без промежуточной папки-контейнера
-            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle) + '.mkv';
+            // Проверяем, содержит ли название точное имя файла с расширением (например, содержит точку и расширение на конце)
+            var hasExtension = /\.[0-9a-z]{2,4}$/i.test(title);
+            
+            if (hasExtension) {
+                // Если в названии уже есть расширение (например Street.Fighter.2026.TS.mp4), используем его целиком
+                finalUri = baseUri + '/' + encodeURIComponent(title);
+            } else {
+                // Если расширения нет, подставляем .mkv по умолчанию
+                finalUri = baseUri + '/' + encodeURIComponent(title) + '.mkv';
+            }
         }
 
         debugNotify('Открываю в плеере: ' + finalUri);
