@@ -546,21 +546,11 @@
 
     // ================= КНОПКИ В КАРТОЧКЕ И ПРОГРЕСС =================
 
-    // Иконка торрента (стрелка вниз внутри круга с точками) в SVG
-    var ICON_TORRENT = '<svg viewBox="0 0 24 24" width="24" height="24" style="vertical-align:middle;margin-right:6px;"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>';
-
     function createButton(className, text, handler) {
         var button = document.createElement('div');
         button.className = 'qbit-direct-btn ' + className + ' selector';
         button.tabIndex = 0;
-        
-        // Если передан HTML с иконкой, используем innerHTML
-        if (text.indexOf('<svg') !== -1) {
-            button.innerHTML = text;
-        } else {
-            button.textContent = text;
-        }
-        
+        button.textContent = text;
         bindPress(button, handler);
         return button;
     }
@@ -611,14 +601,14 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Кнопка Добавить (с иконкой торрента)
-            var addButton = createButton('qbit-direct-add', ICON_TORRENT, function () {
+            // Кнопка добавления теперь называется "qBittorrent"
+            var addButton = createButton('qbit-direct-add', 'qBittorrent', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
                     return;
                 }
 
-                addButton.innerHTML = '⏳ 0%';
+                addButton.textContent = '⏳ 0%';
                 addButton.classList.add('qbit-loading');
                 
                 qbAdd(magnet, title, function() {
@@ -638,7 +628,7 @@
                                 deleteButton.style.display = 'inline-flex';
                                 notify('Загрузка завершена!');
                             } else {
-                                addButton.innerHTML = '⏳ ' + Math.floor(progress * 100) + '%';
+                                addButton.textContent = '⏳ ' + Math.floor(progress * 100) + '%';
                             }
                         });
                     }, POLL_INTERVAL);
