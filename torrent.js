@@ -368,7 +368,8 @@
         var finalUri = baseUri;
         if (title) {
             var cleanTitle = title.replace(/[<>:"/\\|?*]/g, '').trim();
-            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle);
+            // Добавляем название папки и имя файла с расширением .mkv
+            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle) + '/' + encodeURIComponent(cleanTitle) + '.mkv';
         }
 
         debugNotify('Открываю в плеере: ' + finalUri);
