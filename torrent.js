@@ -14,6 +14,7 @@
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
+    var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
     var DEF_ALWAYS_SHOW_BUTTONS = false; 
 
     var DEBUG = true;
@@ -88,6 +89,7 @@
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', DEF_AUTO_CAT_PATH), DEF_AUTO_CAT_PATH),
             delete_files: isTrue(storeGet('qbit_delete_files', DEF_DELETE_FILES), DEF_DELETE_FILES),
             player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
+            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
             always_show_buttons: isTrue(storeGet('qbit_always_show_buttons', DEF_ALWAYS_SHOW_BUTTONS), DEF_ALWAYS_SHOW_BUTTONS)
         };
     }
@@ -243,7 +245,10 @@
         function finishAdd(response) {
             console.log('[qBittorrent] add response:', response);
             
-            if (response === null) return; 
+            if (response === null) {
+                // Ничего не показываем на экране, только консоль
+                return; 
+            }
 
             if (/Forbidden|403/i.test(response)) {
                 console.error('[qBittorrent] 403 Forbidden');
@@ -293,7 +298,9 @@
         function finishDelete(response) {
             console.log('[qBittorrent] delete response:', response);
             
-            if (response === null) return;
+            if (response === null) {
+                return;
+            }
             if (/Forbidden|403/i.test(response)) {
                 console.error('[qBittorrent] 403 Forbidden on delete');
                 return;
@@ -322,42 +329,70 @@
         }
     }
 
-    // ================= СИСТЕМНЫЙ ПРОВОДНИК =================
+    // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    function pickFileFromSystem() {
-        debugNotify('Открываю системный проводник...');
-        
-        // Пытаемся открыть системный файловый менеджер через Intent
-        var intent = {
-            action: 'android.intent.action.GET_CONTENT',
-            type: 'video/*',
-            category: 'android.intent.category.OPENABLE'
-        };
+    function openFileInPlayer(fileUri, playerPkg) {
+        var uri = String(fileUri || '').trim();
+        var pkg = String(playerPkg || '').trim();
+
+        if (!uri) {
+            console.warn('[qBittorrent] Empty SMB path');
+            return;
+        }
+
+        debugNotify('Открываю: ' + uri + ' (' + (pkg || 'выбор') + ')');
 
         try {
-            if (window.AndroidJS && typeof AndroidJS.startActivityForResult === 'function') {
-                AndroidJS.startActivityForResult(JSON.stringify(intent));
+            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
+                Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
                 return;
             }
         } catch (e) {
-            console.error('[qBittorrent] startActivityForResult error:', e);
+            console.error('[qBittorrent] Lampa.Android.openPlayer error:', e);
         }
 
-        // Если startActivityForResult нет, открываем просто файловый менеджер
+        try {
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
+                AndroidJS.openPlayer(uri, pkg, '', 'video/*');
+                return;
+            }
+        } catch (e) {
+            console.error('[qBittorrent] AndroidJS.openPlayer error:', e);
+        }
+
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
-                var intentOpen = {
-                    action: 'android.intent.action.OPEN_DOCUMENT',
-                    type: 'video/*'
-                };
-                AndroidJS.startActivity(JSON.stringify(intentOpen));
+                AndroidJS.startActivity(JSON.stringify({
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: 'video/*',
+                    package: pkg
+                }));
                 return;
             }
         } catch (e) {
-            console.error('[qBittorrent] startActivity error:', e);
+            console.error('[qBittorrent] AndroidJS.startActivity error:', e);
         }
-        
-        notify('Не удалось открыть проводник');
+
+        try {
+            if (window.Android && typeof Android.openPlayer === 'function') {
+                Android.openPlayer(uri, { package: pkg, title: '' });
+                return;
+            }
+        } catch (e) {
+            console.error('[qBittorrent] Android.openPlayer error:', e);
+        }
+
+        console.error('[qBittorrent] Could not open player');
+    }
+
+    function handlePlayerButton() {
+        var config = cfg();
+        if (!config.player_package || config.player_package === 'custom') {
+            console.warn('[qBittorrent] Player not selected');
+            return;
+        }
+        openFileInPlayer(config.smb_file, config.player_package);
     }
 
     // ================= НАЖАТИЯ =================
@@ -467,6 +502,12 @@
                 component: 'qbit_direct',
                 param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
                 field: { name: 'Видеоплеер', description: 'Выберите плеер' }
+            });
+
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: { name: 'qbit_smb_file', type: 'input', values: '', default: DEF_SMB_FILE },
+                field: { name: 'SMB-путь к файлу или папке', description: 'smb://192.168.1.50/Media/' }
             });
 
             console.log('[qBittorrent] Настройки зарегистрированы');
@@ -588,13 +629,8 @@
                 });
             });
 
-            // Новая кнопка выбора файла через проводник
-            var pickFileButton = createButton('qbit-direct-pick', '📁 Выбрать файл', function () {
-                pickFileFromSystem();
-            });
-
-            var playerButton = createButton('qbit-direct-player', '▶ Открыть', function () {
-                pickFileFromSystem(); // Переиспользуем вызов проводника
+            var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
+                handlePlayerButton();
             });
 
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
@@ -607,7 +643,6 @@
             }
 
             actions.appendChild(addButton);
-            actions.appendChild(pickFileButton);
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
@@ -633,8 +668,6 @@
                     '.qbit-direct-btn.focus{border-color:white;background:#51595c;}' +
                     '.qbit-direct-add{background:#1f4b3a;border-color:#3fae7a;}' +
                     '.qbit-direct-add.focus{background:#2c6b51;}' +
-                    '.qbit-direct-pick{background:#5a3a1f;border-color:#e0a34a;}' +
-                    '.qbit-direct-pick.focus{background:#7a5a2f;}' +
                     '.qbit-direct-player{background:#2a3a4a;border-color:#5a8ab0;}' +
                     '.qbit-direct-player.focus{background:#3a5a7a;}' +
                     '.qbit-direct-delete{background:#4b2323;border-color:#ae3f3f;}' +
