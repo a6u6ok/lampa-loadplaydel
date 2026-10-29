@@ -42,7 +42,6 @@
         'com.speedsoftware.rootexplorer': 'Root Explorer',
         'com.lonelycatgames.Xplore': 'X-plore',
         'com.mxtech.videoplayer.ad': 'MX Player (встроенный)',
-        'com.filemanager.plus': 'Файловый менеджер +',
         'custom': 'Другой (ввести вручную)'
     };
 
@@ -334,11 +333,12 @@
         }
     }
 
-    // ================= ЗАПУСК ФАЙЛОВОГО МЕНЕДЖЕРА =================
+    // ================= ОТКРЫТИЕ SMB-ССЫЛКИ В ФАЙЛОВОМ МЕНЕДЖЕРЕ =================
 
-    function launchFileManager() {
+    function launchSmbPath() {
         var config = cfg();
         var pkg = String(config.filemanager_package || '').trim();
+        var uri = String(config.smb_file || '').trim();
 
         if (!pkg || pkg === 'custom') {
             console.warn('[qBittorrent] File manager not selected');
@@ -346,13 +346,21 @@
             return;
         }
 
-        debugNotify('Запускаю файловый менеджер: ' + pkg);
+        if (!uri) {
+            console.warn('[qBittorrent] Empty SMB path');
+            notify('Укажите SMB-путь в настройках');
+            return;
+        }
 
+        debugNotify('Открываю SMB-путь в менеджере: ' + uri + ' (' + pkg + ')');
+
+        // 1) Пытаемся передать SMB-ссылку через ACTION_VIEW конкретному приложению
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 AndroidJS.startActivity(JSON.stringify({
-                    action: 'android.intent.action.MAIN',
-                    category: 'android.intent.category.LAUNCHER',
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: '*/*', // Для SMB-ссылок универсальный тип
                     package: pkg
                 }));
                 return;
@@ -361,11 +369,13 @@
             console.error('[qBittorrent] AndroidJS.startActivity error:', e);
         }
 
+        // 2) Если startActivity не сработал, пробуем через Lampa
         try {
             if (window.Lampa && Lampa.Android && typeof Lampa.Android.startActivity === 'function') {
                 Lampa.Android.startActivity(JSON.stringify({
-                    action: 'android.intent.action.MAIN',
-                    category: 'android.intent.category.LAUNCHER',
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: '*/*',
                     package: pkg
                 }));
                 return;
@@ -373,8 +383,18 @@
         } catch (e) {
             console.error('[qBittorrent] Lampa.Android.startActivity error:', e);
         }
+
+        // 3) Резервный вариант — открываем SMB через общий openUrl
+        try {
+            if (window.AndroidJS && typeof AndroidJS.openUrl === 'function') {
+                AndroidJS.openUrl(uri);
+                return;
+            }
+        } catch (e) {
+            console.error('[qBittorrent] AndroidJS.openUrl error:', e);
+        }
         
-        notify('Не удалось запустить файловый менеджер');
+        notify('Не удалось открыть SMB-путь');
     }
 
     // ================= НАЖАТИЯ =================
@@ -480,13 +500,14 @@
                 }
             });
 
-            // Выбор файлового менеджера вместо плеера
+            // Выбор файлового менеджера
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: { name: 'qbit_filemanager_package', type: 'select', values: FILEMANAGERS_LIST, default: '' },
                 field: { name: 'Файловый менеджер', description: 'Выберите приложение для кнопки "Открыть"' }
             });
 
+            // SMB-путь
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: { name: 'qbit_smb_file', type: 'input', values: '', default: DEF_SMB_FILE },
@@ -612,9 +633,9 @@
                 });
             });
 
-            // Кнопка "Открыть" для запуска файлового менеджера
+            // Кнопка "Открыть", которая передает SMB-ссылку в файловый менеджер
             var playerButton = createButton('qbit-direct-player', '📁 Открыть', function () {
-                launchFileManager();
+                launchSmbPath();
             });
 
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
