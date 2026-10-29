@@ -125,7 +125,7 @@
     }
 
     function magnetHash(magnet) {
-        var match = /urn:btih:([a-zA-Z0-9]+)/.exec(magnet || '');
+        var match = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
         return match ? match[1].toLowerCase() : '';
     }
 
@@ -206,7 +206,7 @@
             headers: CT_FORM,
             body: body
         }).then(function () {
-            notify('Запрос отправлен, но ответ недоступен для проверки');
+            debugNotify('Запрос отправлен (no-cors режим)');
         }).catch(function (error) {
             console.error('[qBittorrent] blind request error:', error);
             notify('Ошибка отправки запроса в qBittorrent');
@@ -236,7 +236,6 @@
         body += '&paused=false&stopped=false';
         body += '&autoTMM=' + (autoTMM ? 'true' : 'false');
 
-        console.log('[qBittorrent] add body:', body);
         return body;
     }
 
@@ -270,8 +269,6 @@
                 blindRequest(base() + '/api/v2/torrents/add', 'POST', body);
                 return;
             }
-
-            console.log('[qBittorrent] add response:', response);
 
             if (/Forbidden|403/i.test(response)) {
                 notify('qBittorrent: 403. Проверь доступ к Web UI');
@@ -324,7 +321,6 @@
         debugNotify('Удаляю торрент из qBittorrent...');
 
         function finishDelete(response) {
-            console.log('[qBittorrent] delete response:', response);
             if (response === null || response === undefined) {
                 blindRequest(base() + '/api/v2/torrents/delete', 'POST', body);
                 return;
@@ -359,8 +355,6 @@
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    // Открыть конкретный видеофайл (или папку) в выбранном плеере.
-    // Используем ACTION_VIEW с data = URI файла и package = плеер.
     function openFileInPlayer(fileUri, playerPkg) {
         var uri = String(fileUri || '').trim();
         var pkg = String(playerPkg || '').trim();
@@ -370,81 +364,54 @@
             return;
         }
 
-        debugNotify('Открываю файл в плеере: ' + uri + ' (' + (pkg || 'системный выбор') + ')');
+        debugNotify('Открываю файл в плеере: ' + uri);
 
-        // 1) Lampa.Android.openPlayer — основной путь
+        // 1) Lampa.Android.openPlayer
         try {
-            if (
-                window.Lampa &&
-                Lampa.Android &&
-                typeof Lampa.Android.openPlayer === 'function'
-            ) {
-                Lampa.Android.openPlayer(uri, {
-                    package: pkg,
-                    title: ''
-                });
+            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
+                Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
                 return;
             }
-        } catch (e) {
-            console.warn('[qBittorrent] Lampa.Android.openPlayer failed:', e);
-        }
+        } catch (e) {}
 
-        // 2) AndroidJS.openPlayer(uri, pkg, title, mime)
+        // 2) AndroidJS.openPlayer
         try {
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.openPlayer === 'function'
-            ) {
+            if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer(uri, pkg, '', 'video/*');
                 return;
             }
-        } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.openPlayer failed:', e);
-        }
+        } catch (e) {}
 
-        // 3) AndroidJS.startActivity с ACTION_VIEW + package
+        // 3) AndroidJS.startActivity
         try {
-            if (
-                window.AndroidJS &&
-                typeof AndroidJS.startActivity === 'function'
-            ) {
-                var intent = {
+            if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
+                AndroidJS.startActivity(JSON.stringify({
                     action: 'android.intent.action.VIEW',
                     data: uri,
                     type: 'video/*',
                     package: pkg
-                };
-                AndroidJS.startActivity(JSON.stringify(intent));
+                }));
                 return;
             }
-        } catch (e) {
-            console.warn('[qBittorrent] AndroidJS.startActivity failed:', e);
-        }
+        } catch (e) {}
 
-        // 4) Android.openPlayer (старый интерфейс)
+        // 4) Android.openPlayer
         try {
             if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(uri, {
-                    package: pkg,
-                    title: ''
-                });
+                Android.openPlayer(uri, { package: pkg, title: '' });
                 return;
             }
-        } catch (e) {
-            console.warn('[qBittorrent] Android.openPlayer failed:', e);
-        }
+        } catch (e) {}
 
         notify('Не удалось открыть файл в плеере');
     }
 
     function handlePlayerButton() {
         var config = cfg();
-
         if (!config.player_package || config.player_package === 'custom') {
             notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
             return;
         }
-
         openFileInPlayer(config.smb_file, config.player_package);
     }
 
@@ -467,14 +434,11 @@
         element.addEventListener('click', wrapped);
     }
 
-    // ================= РЕГИСТРАЦИЯ НАСТРОЕК =================
+    // ================= НАСТРОЙКИ И ИНТЕРФЕЙС =================
 
     function registerSettings() {
         try {
-            if (!window.Lampa || !Lampa.SettingsApi) {
-                console.error('[qBittorrent] Lampa.SettingsApi недоступен');
-                return;
-            }
+            if (!window.Lampa || !Lampa.SettingsApi) return;
 
             Lampa.SettingsApi.addComponent({
                 component: 'qbit_direct',
@@ -482,87 +446,32 @@
                 name: 'qBittorrent'
             });
 
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_url', type: 'input', values: '', default: DEF_URL },
-                field: { name: 'Адрес сервера', description: 'Адрес Web UI qBittorrent, например http://192.168.1.50:8080' }
+            var params = [
+                { name: 'qbit_url', type: 'input', def: DEF_URL, title: 'Адрес сервера', desc: 'Адрес Web UI qBittorrent, например http://192.168.1.50:8080' },
+                { name: 'qbit_user', type: 'input', def: DEF_USER, title: 'Логин', desc: 'Логин, если не используется обход аутентификации' },
+                { name: 'qbit_pass', type: 'input', def: DEF_PASS, title: 'Пароль', desc: 'Пароль, если не используется обход аутентификации' },
+                { name: 'qbit_bypass', type: 'trigger', def: DEF_BYPASS, title: 'Обход аутентификации', desc: 'Включи обход аутентификации для локальной сети в qBittorrent' },
+                { name: 'qbit_savepath', type: 'input', def: DEF_SAVEPATH, title: 'Базовый путь сохранения', desc: 'Например: /app/qBittorrent. Пусто = по умолчанию' },
+                { name: 'qbit_category', type: 'input', def: DEF_CATEGORY, title: 'Категория', desc: 'Категория для торрентов, например video' },
+                { name: 'qbit_auto_cat_path', type: 'trigger', def: DEF_AUTO_CAT_PATH, title: 'Добавлять категорию к пути', desc: 'Например: /app/qBittorrent + video' },
+                { name: 'qbit_rename', type: 'trigger', def: DEF_RENAME, title: 'Переименовывать торрент', desc: 'Использовать название раздачи как имя торрента' },
+                { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Проверять добавление', desc: 'Проверять, появился ли торрент в qBittorrent' },
+                { name: 'qbit_delete_files', type: 'trigger', def: DEF_DELETE_FILES, title: 'Удалять файлы торрента', desc: 'При удалении также удалять скачанные файлы' },
+                { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к файлу или папке', desc: 'Например: smb://192.168.1.50/Media/Movie.mkv' }
+            ];
+
+            params.forEach(function (p) {
+                Lampa.SettingsApi.addParam({
+                    component: 'qbit_direct',
+                    param: { name: p.name, type: p.type, values: '', default: p.def },
+                    field: { name: p.title, description: p.desc }
+                });
             });
 
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
-                param: { name: 'qbit_user', type: 'input', values: '', default: DEF_USER },
-                field: { name: 'Логин', description: 'Логин, если не используется обход аутентификации' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_pass', type: 'input', values: '', default: DEF_PASS },
-                field: { name: 'Пароль', description: 'Пароль, если не используется обход аутентификации' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_bypass', type: 'trigger', default: DEF_BYPASS },
-                field: { name: 'Обход аутентификации', description: 'Включи обход аутентификации для локальной сети в qBittorrent' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_savepath', type: 'input', values: '', default: DEF_SAVEPATH },
-                field: { name: 'Базовый путь сохранения', description: 'Например: /app/qBittorrent. Пусто = путь qBittorrent по умолчанию' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_category', type: 'input', values: '', default: DEF_CATEGORY },
-                field: { name: 'Категория', description: 'Категория для торрентов, например video' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_auto_cat_path', type: 'trigger', default: DEF_AUTO_CAT_PATH },
-                field: { name: 'Добавлять категорию к пути', description: 'Например: /app/qBittorrent + video = /app/qBittorrent/video' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_rename', type: 'trigger', default: DEF_RENAME },
-                field: { name: 'Переименовывать торрент', description: 'Использовать название раздачи как имя торрента' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_confirm', type: 'trigger', default: DEF_CONFIRM },
-                field: { name: 'Проверять добавление', description: 'Проверять, появился ли торрент в qBittorrent' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_delete_files', type: 'trigger', default: DEF_DELETE_FILES },
-                field: { name: 'Удалять файлы торрента', description: 'При удалении также удалять скачанные файлы на сервере' }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: {
-                    name: 'qbit_player_package',
-                    type: 'select',
-                    values: PLAYERS_LIST,
-                    default: ''
-                },
-                field: {
-                    name: 'Видеоплеер',
-                    description: 'Выберите плеер из списка для кнопки «Открыть плеер»'
-                }
-            });
-
-            Lampa.SettingsApi.addParam({
-                component: 'qbit_direct',
-                param: { name: 'qbit_smb_file', type: 'input', values: '', default: DEF_SMB_FILE },
-                field: {
-                    name: 'SMB-путь к файлу или папке',
-                    description: 'Например: smb://192.168.1.50/Media/Movie.mkv или smb://192.168.1.50/Media/'
-                }
+                param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
+                field: { name: 'Видеоплеер', description: 'Выберите плеер из списка для кнопки «Открыть плеер»' }
             });
 
             console.log('[qBittorrent] Настройки зарегистрированы');
@@ -571,14 +480,9 @@
         }
     }
 
-    // ================= ПУНКТ МЕНЮ =================
-
     function addMenuItem() {
         try {
-            if (!window.Lampa || !Lampa.Menu || typeof Lampa.Menu.addButton !== 'function') {
-                console.error('[qBittorrent] Lampa.Menu.addButton недоступен');
-                return;
-            }
+            if (!window.Lampa || !Lampa.Menu || typeof Lampa.Menu.addButton !== 'function') return;
 
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24">' +
                 '<path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
@@ -590,14 +494,10 @@
                     if (item) item.click();
                 }, 100);
             });
-
-            console.log('[qBittorrent] Пункт меню добавлен');
         } catch (error) {
             console.error('[qBittorrent] Ошибка добавления пункта меню:', error);
         }
     }
-
-    // ================= КНОПКИ В КАРТОЧКЕ =================
 
     function createButton(className, text, handler) {
         var button = document.createElement('div');
@@ -617,18 +517,20 @@
             var item = event.item.jquery ? event.item[0] : event.item;
             var data = event.element || {};
 
-            if (!item || item.querySelector('.qbit-direct-actions')) return;
-
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title = data.Title || data.title || '';
+            var hash = magnetHash(magnet);
 
-            if (DEBUG) console.log('[qBittorrent] torrent card data:', data);
+            if (!item || !hash) return;
+
+            // Защита от дублирования для конкретного элемента по хэшу
+            if (item.querySelector('.qbit-direct-actions[data-hash="' + hash + '"]')) return;
 
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
+            actions.setAttribute('data-hash', hash);
 
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
-                console.log('[qBittorrent] add press:', magnet);
                 qbAdd(magnet, title);
             });
 
@@ -652,7 +554,6 @@
 
     function initializePlugin() {
         try {
-            console.log('[qBittorrent] Инициализация плагина...');
             registerSettings();
             addMenuItem();
             initTorrentButton();
@@ -667,14 +568,13 @@
                     '.qbit-direct-player{background:#1f4b3a;border-color:#3fae7a;}' +
                     '.qbit-direct-player.focus{background:#2c6b51;}' +
                     '.qbit-direct-delete{background:#4b2323;border-color:#ae3f3f;}' +
-                    '.qbit-direct-delete.focus{background:#6b2c2c;}';
+                    '.qbit-direct-delete.focus{background:#6b2c2c;}' +
+                    '@media screen and (max-width: 768px) { .qbit-direct-btn { font-size: 14px; padding: 8px 12px; margin: 4px; } }';
                 document.head.appendChild(style);
             }
             console.log('[qBittorrent] Плагин загружен');
-            notify('qBittorrent: плагин загружен');
         } catch (error) {
             console.error('[qBittorrent] Ошибка инициализации:', error);
-            notify('Ошибка инициализации qBittorrent');
         }
     }
 
