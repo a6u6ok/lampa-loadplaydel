@@ -48,7 +48,9 @@
                 Lampa.Noty.show(text);
                 return;
             }
-        } catch (error) {}
+        } catch (error) {
+            console.error('[qBittorrent] notify error:', error);
+        }
         console.log('[qBittorrent]', text);
     }
 
@@ -62,7 +64,9 @@
                 var value = Lampa.Storage.get(key, defaultValue);
                 if (value !== undefined && value !== null) return value;
             }
-        } catch (error) {}
+        } catch (error) {
+            console.error('[qBittorrent] storeGet error:', error);
+        }
         return defaultValue;
     }
 
@@ -115,6 +119,7 @@
             responded = true;
 
             if (response === null || response === undefined) {
+                console.log('[qBittorrent] nativeRequest: empty response, trying fetch...');
                 fetchRequest(request, callback);
                 return;
             }
@@ -122,15 +127,17 @@
         }
 
         if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
+            console.log('[qBittorrent] AndroidJS.httpReq not available, using fetch');
             fetchRequest(request, callback);
             return;
         }
 
-        try { AndroidJS.getResp(); } catch (e) {}
+        try { AndroidJS.getResp(); } catch (error) { console.error('[qBittorrent] getResp drain error:', error); }
 
         try {
             AndroidJS.httpReq(JSON.stringify(request));
         } catch (e) {
+            console.error('[qBittorrent] AndroidJS.httpReq (json) error:', e);
             try {
                 AndroidJS.httpReq(
                     request.url,
@@ -141,6 +148,7 @@
                     })
                 );
             } catch (e2) {
+                console.error('[qBittorrent] AndroidJS.httpReq (url, json) error:', e2);
                 fetchRequest(request, callback);
                 return;
             }
@@ -154,7 +162,7 @@
             tries++;
 
             var response = null;
-            try { response = AndroidJS.getResp(); } catch (e) {}
+            try { response = AndroidJS.getResp(); } catch (error) { console.error('[qBittorrent] getResp error:', error); }
 
             if (typeof response === 'string' && response.length > 2) {
                 finish(response);
@@ -162,6 +170,7 @@
             }
 
             if (tries >= maxTries) {
+                console.warn('[qBittorrent] nativeRequest timeout after ' + maxTries + ' tries');
                 finish(null);
                 return;
             }
@@ -171,6 +180,7 @@
 
     function fetchRequest(request, callback) {
         if (typeof fetch !== 'function') {
+            console.error('[qBittorrent] fetch not available');
             callback(null);
             return;
         }
@@ -216,12 +226,14 @@
 
         body += '&paused=false&stopped=false';
         body += '&autoTMM=' + (autoTMM ? 'true' : 'false');
+        
+        console.log('[qBittorrent] add body:', body);
         return body;
     }
 
     function qbAdd(magnet, title, onComplete) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
-            notify('Magnet-ссылка не найдена');
+            console.warn('[qBittorrent] Magnet link not found or invalid');
             return;
         }
 
@@ -231,20 +243,22 @@
         debugNotify('Отправляю в qBittorrent...');
 
         function finishAdd(response) {
-            if (response === null || response === undefined) {
-                notify('Запрос отправлен');
-                if (onComplete) onComplete();
-                return;
+            console.log('[qBittorrent] add response:', response);
+            
+            if (response === null) {
+                // Ничего не показываем на экране, только консоль
+                return; 
             }
 
             if (/Forbidden|403/i.test(response)) {
-                notify('qBittorrent: 403. Проверь доступ');
+                console.error('[qBittorrent] 403 Forbidden');
                 return;
             }
             if (/Fails/i.test(response)) {
-                notify('qBittorrent: ошибка добавления');
+                console.error('[qBittorrent] Add failed');
                 return;
             }
+            
             notify('Отправлено в qBittorrent');
             if (onComplete) onComplete();
         }
@@ -273,7 +287,7 @@
     function qbDelete(magnet) {
         var hash = magnetHash(magnet);
         if (!hash) {
-            notify('Не удалось определить hash торрента');
+            console.warn('[qBittorrent] Could not determine torrent hash');
             return;
         }
 
@@ -282,11 +296,16 @@
         debugNotify('Удаляю торрент из qBittorrent...');
 
         function finishDelete(response) {
-            if (response === null || response === undefined) {
-                notify('Запрос на удаление отправлен');
+            console.log('[qBittorrent] delete response:', response);
+            
+            if (response === null) {
                 return;
             }
-            notify(config.delete_files ? 'Торрент и файлы удалены' : 'Торрент удалён');
+            if (/Forbidden|403/i.test(response)) {
+                console.error('[qBittorrent] 403 Forbidden on delete');
+                return;
+            }
+            notify('Торрент удалён');
         }
 
         function deleteRequest() {
@@ -317,7 +336,7 @@
         var pkg = String(playerPkg || '').trim();
 
         if (!uri) {
-            notify('Укажите SMB-путь к файлу в настройках');
+            console.warn('[qBittorrent] Empty SMB path');
             return;
         }
 
@@ -328,14 +347,18 @@
                 Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
                 return;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[qBittorrent] Lampa.Android.openPlayer error:', e);
+        }
 
         try {
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer(uri, pkg, '', 'video/*');
                 return;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[qBittorrent] AndroidJS.openPlayer error:', e);
+        }
 
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
@@ -347,22 +370,26 @@
                 }));
                 return;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[qBittorrent] AndroidJS.startActivity error:', e);
+        }
 
         try {
             if (window.Android && typeof Android.openPlayer === 'function') {
                 Android.openPlayer(uri, { package: pkg, title: '' });
                 return;
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[qBittorrent] Android.openPlayer error:', e);
+        }
 
-        notify('Не удалось открыть файл в плеере');
+        console.error('[qBittorrent] Could not open player');
     }
 
     function handlePlayerButton() {
         var config = cfg();
         if (!config.player_package || config.player_package === 'custom') {
-            notify('Плеер не выбран. Зайдите в настройки.');
+            console.warn('[qBittorrent] Player not selected');
             return;
         }
         openFileInPlayer(config.smb_file, config.player_package);
@@ -391,7 +418,10 @@
 
     function registerSettings() {
         try {
-            if (!window.Lampa || !Lampa.SettingsApi) return;
+            if (!window.Lampa || !Lampa.SettingsApi) {
+                console.error('[qBittorrent] Lampa.SettingsApi not available');
+                return;
+            }
 
             Lampa.SettingsApi.addComponent({
                 component: 'qbit_direct',
@@ -490,7 +520,10 @@
 
     function addMenuItem() {
         try {
-            if (!window.Lampa || !Lampa.Menu || typeof Lampa.Menu.addButton !== 'function') return;
+            if (!window.Lampa || !Lampa.Menu || typeof Lampa.Menu.addButton !== 'function') {
+                console.error('[qBittorrent] Lampa.Menu.addButton not available');
+                return;
+            }
 
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
 
@@ -501,7 +534,9 @@
                     if (item) item.click();
                 }, 100);
             });
-        } catch (error) {}
+        } catch (error) {
+            console.error('[qBittorrent] Ошибка добавления пункта меню:', error);
+        }
     }
 
     // ================= КНОПКИ В КАРТОЧКЕ И ПРОГРЕСС =================
@@ -531,12 +566,17 @@
                     var progress = torrents[0].progress;
                     onProgress(progress);
                 }
-            } catch (e) {}
+            } catch (error) {
+                console.error('[qBittorrent] parse progress error:', error);
+            }
         });
     }
 
     function initTorrentButton() {
-        if (!window.Lampa || !Lampa.Listener) return;
+        if (!window.Lampa || !Lampa.Listener) {
+            console.error('[qBittorrent] Lampa.Listener not available');
+            return;
+        }
 
         Lampa.Listener.follow('torrent', function (event) {
             if (!event || event.type !== 'render' || !event.item) return;
@@ -610,25 +650,6 @@
         });
     }
 
-    // ================= ТЕСТ HTTP ЗАПРОСА =================
-    function testHttpRequest() {
-        var testUrl = base() + '/api/v2/app/version';
-        console.log('[qBittorrent TEST] Отправка запроса на: ' + testUrl);
-
-        nativeRequest({
-            url: testUrl,
-            method: 'GET'
-        }, function (response) {
-            if (response === null || response === undefined) {
-                console.error('[qBittorrent TEST] ОШИБКА: Ответ не получен (null).');
-                notify('ТЕСТ: Ответ не получен');
-            } else {
-                console.log('[qBittorrent TEST] УСПЕХ! Ответ сервера: ' + response);
-                notify('ТЕСТ: ' + response);
-            }
-        });
-    }
-
     // ================= ИНИЦИАЛИЗАЦИЯ =================
 
     function initializePlugin() {
@@ -655,10 +676,6 @@
                 document.head.appendChild(style);
             }
             console.log('[qBittorrent] Плагин загружен');
-
-            // Запускаем тест через 5 секунд
-            setTimeout(testHttpRequest, 5000);
-
         } catch (error) {
             console.error('[qBittorrent] Ошибка инициализации:', error);
         }
