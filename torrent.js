@@ -21,7 +21,7 @@
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
-    var DEF_ALWAYS_SHOW = false; // По умолчанию скрывать до 100%
+    var DEF_ALWAYS_SHOW = false;
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -30,11 +30,13 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    // Список плееров
+    // Список плееров (включая плееры для Windows и Android)
     var PLAYERS_LIST = {
         '': 'Не выбран',
+        'potplayer': 'PotPlayer (Windows)',
+        'vlc': 'VLC (Windows / Системный)',
+        'org.videolan.vlc': 'VLC (Android)',
         'top.rootu.dddplayer': 'DDD Video Player',
-        'org.videolan.vlc': 'VLC',
         'com.mxtech.videoplayer.ad': 'MX Player',
         'net.gtvbox.videoplayer': 'Vimu Player',
         'com.brouken.player': 'Just (Video) Player',
@@ -543,7 +545,6 @@
                 });
             });
 
-            // Если настройка "Всегда показывать" включена, показываем сразу. Иначе — скрываем до 100%.
             if (!config.always_show) {
                 playerButton.style.display = 'none';
                 deleteButton.style.display = 'none';
@@ -577,7 +578,6 @@
                 });
             }
 
-            // Запускаем опрос только если выключен режим "всегда показывать"
             if (!config.always_show) {
                 startPolling();
             }
