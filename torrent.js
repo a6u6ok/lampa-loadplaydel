@@ -20,6 +20,7 @@
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_FILEMANAGER_PACKAGE = '';
+    var DEF_CUSTOM_FILEMANAGER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
     var DEF_ALWAYS_SHOW_BUTTONS = false; 
 
@@ -42,7 +43,7 @@
         'com.speedsoftware.rootexplorer': 'Root Explorer',
         'com.lonelycatgames.Xplore': 'X-plore',
         'com.mxtech.videoplayer.ad': 'MX Player (встроенный)',
-        'custom': 'Другой (ввести вручную)'
+        'custom': 'Другой (указать пакет ниже)'
     };
 
     // ================= УТИЛИТЫ =================
@@ -94,6 +95,7 @@
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', DEF_AUTO_CAT_PATH), DEF_AUTO_CAT_PATH),
             delete_files: isTrue(storeGet('qbit_delete_files', DEF_DELETE_FILES), DEF_DELETE_FILES),
             filemanager_package: storeGet('qbit_filemanager_package', DEF_FILEMANAGER_PACKAGE),
+            custom_filemanager_package: storeGet('qbit_custom_filemanager_package', DEF_CUSTOM_FILEMANAGER_PACKAGE),
             smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
             always_show_buttons: isTrue(storeGet('qbit_always_show_buttons', DEF_ALWAYS_SHOW_BUTTONS), DEF_ALWAYS_SHOW_BUTTONS)
         };
@@ -337,12 +339,19 @@
 
     function launchSmbPath() {
         var config = cfg();
-        var pkg = String(config.filemanager_package || '').trim();
+        var pkg = config.filemanager_package;
+        
+        // Если выбран "Другой", берем пакет из текстового поля
+        if (pkg === 'custom') {
+            pkg = config.custom_filemanager_package;
+        }
+
+        pkg = String(pkg || '').trim();
         var uri = String(config.smb_file || '').trim();
 
-        if (!pkg || pkg === 'custom') {
-            console.warn('[qBittorrent] File manager not selected');
-            notify('Файловый менеджер не выбран');
+        if (!pkg) {
+            console.warn('[qBittorrent] File manager package is empty');
+            notify('Укажите пакет файлового менеджера в настройках');
             return;
         }
 
@@ -360,7 +369,7 @@
                 AndroidJS.startActivity(JSON.stringify({
                     action: 'android.intent.action.VIEW',
                     data: uri,
-                    type: '*/*', // Для SMB-ссылок универсальный тип
+                    type: '*/*',
                     package: pkg
                 }));
                 return;
@@ -507,6 +516,13 @@
                 field: { name: 'Файловый менеджер', description: 'Выберите приложение для кнопки "Открыть"' }
             });
 
+            // Поле для ручного ввода пакета (если выбран "Другой")
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
+                param: { name: 'qbit_custom_filemanager_package', type: 'input', values: '', default: DEF_CUSTOM_FILEMANAGER_PACKAGE },
+                field: { name: 'Пакет своего менеджера', description: 'Если выбрано "Другой", впишите пакет сюда' }
+            });
+
             // SMB-путь
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
@@ -633,7 +649,7 @@
                 });
             });
 
-            // Кнопка "Открыть", которая передает SMB-ссылку в файловый менеджер
+            // Кнопка "Открыть", передающая SMB-ссылку
             var playerButton = createButton('qbit-direct-player', '📁 Открыть', function () {
                 launchSmbPath();
             });
