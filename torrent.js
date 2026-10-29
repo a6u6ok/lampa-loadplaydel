@@ -368,8 +368,8 @@
         var finalUri = baseUri;
         if (title) {
             var cleanTitle = title.replace(/[<>:"/\\|?*]/g, '').trim();
-            // Добавляем название папки и имя файла с расширением .mkv
-            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle) + '/' + encodeURIComponent(cleanTitle) + '.mkv';
+            // Сразу файл в корне указанной SMB-папки без промежуточной папки-контейнера
+            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle) + '.mkv';
         }
 
         debugNotify('Открываю в плеере: ' + finalUri);
