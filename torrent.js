@@ -20,6 +20,7 @@
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
+    var DEF_PLAYER_PATH = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
     var DEF_ALWAYS_SHOW = false;
 
@@ -30,11 +31,9 @@
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
-    // Список плееров (включая плееры для Windows и Android)
+    // Список плееров ( Android / Общие )
     var PLAYERS_LIST = {
         '': 'Не выбран',
-        'potplayer': 'PotPlayer (Windows)',
-        'vlc': 'VLC (Windows / Системный)',
         'org.videolan.vlc': 'VLC (Android)',
         'top.rootu.dddplayer': 'DDD Video Player',
         'com.mxtech.videoplayer.ad': 'MX Player',
@@ -113,6 +112,7 @@
                 DEF_DELETE_FILES
             ),
             player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
+            player_path: storeGet('qbit_player_path', DEF_PLAYER_PATH),
             smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
             always_show: isTrue(storeGet('qbit_always_show', DEF_ALWAYS_SHOW), DEF_ALWAYS_SHOW)
         };
@@ -358,9 +358,10 @@
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    function openFileInPlayer(fileUri, playerPkg) {
+    function openFileInPlayer(fileUri, playerPkg, playerPath) {
         var uri = String(fileUri || '').trim();
         var pkg = String(playerPkg || '').trim();
+        var exePath = String(playerPath || '').trim();
 
         if (!uri) {
             notify('Укажите SMB-путь к файлу в настройках qBittorrent');
@@ -369,6 +370,21 @@
 
         debugNotify('Открываю файл в плеере: ' + uri);
 
+        // Если задан путь к исполняемому файлу (например, для Windows)
+        if (exePath) {
+            try {
+                if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
+                    AndroidJS.startActivity(JSON.stringify({
+                        action: 'android.intent.action.VIEW',
+                        data: uri,
+                        type: 'video/*'
+                    }));
+                    return;
+                }
+            } catch (e) {}
+        }
+
+        // 1) Lampa.Android.openPlayer
         try {
             if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
                 Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
@@ -376,6 +392,7 @@
             }
         } catch (e) {}
 
+        // 2) AndroidJS.openPlayer
         try {
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
                 AndroidJS.openPlayer(uri, pkg, '', 'video/*');
@@ -383,6 +400,7 @@
             }
         } catch (e) {}
 
+        // 3) AndroidJS.startActivity
         try {
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 AndroidJS.startActivity(JSON.stringify({
@@ -395,6 +413,7 @@
             }
         } catch (e) {}
 
+        // 4) Android.openPlayer
         try {
             if (window.Android && typeof Android.openPlayer === 'function') {
                 Android.openPlayer(uri, { package: pkg, title: '' });
@@ -407,11 +426,11 @@
 
     function handlePlayerButton() {
         var config = cfg();
-        if (!config.player_package || config.player_package === 'custom') {
-            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
+        if (!config.player_path && (!config.player_package || config.player_package === 'custom')) {
+            notify('Плеер или путь к нему не указаны в настройках.');
             return;
         }
-        openFileInPlayer(config.smb_file, config.player_package);
+        openFileInPlayer(config.smb_file, config.player_package, config.player_path);
     }
 
     // ================= НАЖАТИЯ =================
@@ -457,6 +476,7 @@
                 { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Проверять добавление', desc: 'Проверять, появился ли торрент в qBittorrent' },
                 { name: 'qbit_delete_files', type: 'trigger', def: DEF_DELETE_FILES, title: 'Удалять файлы торрента', desc: 'При удалении также удалять скачанные файлы' },
                 { name: 'qbit_always_show', type: 'trigger', def: DEF_ALWAYS_SHOW, title: 'Всегда показывать кнопки управления', desc: 'Показывать плеер и удаление сразу, не дожидаясь 100% скачивания' },
+                { name: 'qbit_player_path', type: 'input', def: DEF_PLAYER_PATH, title: 'Путь к файлу плеера (exe)', desc: 'Например: C:\\Program Files\\PotPlayer\\PotPlayerMini64.exe (если пусто, используется список выше)' },
                 { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к файлу или папке', desc: 'Например: smb://192.168.1.50/Media/Movie.mkv' }
             ];
 
@@ -471,7 +491,7 @@
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
                 param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
-                field: { name: 'Видеоплеер', description: 'Выберите плеер из списка для кнопки «Открыть плеер»' }
+                field: { name: 'Видеоплеер ( Android )', description: 'Выберите плеер из списка для Android' }
             });
         } catch (error) {
             console.error('[qBittorrent] Ошибка регистрации настроек:', error);
