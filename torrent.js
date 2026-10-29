@@ -20,12 +20,14 @@
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
-    var DEF_PLAYER_PATH = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/download/';
     var DEF_ALWAYS_SHOW = true;
+    var DEF_VERBOSE = false;
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
+    var DELETE_LOCK_MS = 1800;
+    var NATIVE_TIMEOUT_TRIES = 30; // 30 * 150ms = 4.5s
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -72,7 +74,9 @@
                     return value;
                 }
             }
-        } catch (error) {}
+        } catch (error) {
+            if (DEBUG) console.warn('[qBittorrent] storeGet error:', key, error);
+        }
         return defaultValue;
     }
 
@@ -111,9 +115,9 @@
                 DEF_DELETE_FILES
             ),
             player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
-            player_path: storeGet('qbit_player_path', DEF_PLAYER_PATH),
             smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
-            always_show: isTrue(storeGet('qbit_always_show', DEF_ALWAYS_SHOW), DEF_ALWAYS_SHOW)
+            always_show: isTrue(storeGet('qbit_always_show', DEF_ALWAYS_SHOW), DEF_ALWAYS_SHOW),
+            verbose: isTrue(storeGet('qbit_verbose', DEF_VERBOSE), DEF_VERBOSE)
         };
     }
 
@@ -127,15 +131,36 @@
         return String(basePath).replace(/\/+$/, '') + '/' + String(subPath).replace(/^\/+/, '');
     }
 
+    // Поддержка hex (40) и base32 (32) хэшей magnet-ссылок.
+    // qBittorrent API принимает оба варианта, но base32 - только в верхнем регистре.
     function magnetHash(magnet) {
         var match = /urn:btih:([a-zA-Z0-9]+)/i.exec(magnet || '');
-        return match ? match[1].toLowerCase() : '';
+        if (!match) return '';
+        var h = match[1];
+        if (h.length === 40) return h.toLowerCase();   // hex
+        if (h.length === 32) return h.toUpperCase();   // base32
+        return '';
+    }
+
+    // Кодирование пути посегментно, чтобы не превращать '/' в '%2F'
+    function encodePathSegments(path) {
+        return String(path || '')
+            .split('/')
+            .map(function (seg) { return encodeURIComponent(seg); })
+            .join('/');
     }
 
     // ================= HTTP ЗАПРОСЫ =================
 
     function nativeRequest(request, callback) {
         var signature = 0;
+        var finished = false;
+
+        function safeCallback(resp) {
+            if (finished) return;
+            finished = true;
+            callback(resp);
+        }
 
         function drain() {
             try { AndroidJS.getResp(); } catch (error) {}
@@ -143,7 +168,7 @@
 
         function attempt() {
             if (!window.AndroidJS || typeof AndroidJS.httpReq !== 'function') {
-                callback(null);
+                safeCallback(null);
                 return;
             }
 
@@ -166,11 +191,11 @@
                         })
                     );
                 } catch (error) {
-                    callback(null);
+                    safeCallback(null);
                     return;
                 }
             } else {
-                callback(null);
+                safeCallback(null);
                 return;
             }
 
@@ -181,10 +206,10 @@
                 try { response = AndroidJS.getResp(); } catch (error) {}
 
                 if (typeof response === 'string' && response.length) {
-                    callback(response);
+                    safeCallback(response);
                     return;
                 }
-                if (tries > 20) {
+                if (tries > NATIVE_TIMEOUT_TRIES) {
                     signature++;
                     attempt();
                     return;
@@ -197,50 +222,44 @@
         attempt();
     }
 
-    function blindRequest(url, method, body) {
-        if (typeof fetch !== 'function') {
-            notify('Нет поддержки транспорта: нативный запрос недоступен');
+    // ================= QBITTORRENT API =================
+
+    function login(callback) {
+        var config = cfg();
+        if (!config.user) {
+            // Нет логина - не пытаемся, просто продолжаем
+            callback();
             return;
         }
-
-        fetch(url, {
-            method: method,
-            mode: 'no-cors',
-            headers: CT_FORM,
-            body: body
-        }).then(function () {
-            debugNotify('Запрос отправлен (no-cors режим)');
-        }).catch(function (error) {
-            console.error('[qBittorrent] blind request error:', error);
-            notify('Ошибка отправки запроса в qBittorrent');
+        nativeRequest({
+            url: base() + '/api/v2/auth/login',
+            method: 'POST',
+            body: 'username=' + encodeURIComponent(config.user) +
+                  '&password=' + encodeURIComponent(config.pass),
+            headers: CT_FORM
+        }, function () {
+            callback();
         });
     }
 
-    // ================= QBITTORRENT API =================
-
-    function makeApiRequest(url, method, body, callback) {
+    // Универсальный запрос с (опциональной) авторизацией и повтором при 403
+    function apiRequest(url, method, body, callback) {
         var config = cfg();
 
-        function execute() {
+        function doRequest(cb) {
             nativeRequest({
                 url: base() + url,
                 method: method || 'GET',
                 body: body || '',
                 headers: CT_FORM
-            }, function (response) {
+            }, cb);
+        }
+
+        function execute() {
+            doRequest(function (response) {
                 if (response && /Forbidden|403|401/i.test(response) && !config.bypass && config.user) {
-                    nativeRequest({
-                        url: base() + '/api/v2/auth/login',
-                        method: 'POST',
-                        body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
-                        headers: CT_FORM
-                    }, function () {
-                        nativeRequest({
-                            url: base() + url,
-                            method: method || 'GET',
-                            body: body || '',
-                            headers: CT_FORM
-                        }, callback);
+                    login(function () {
+                        doRequest(callback);
                     });
                 } else {
                     callback(response);
@@ -249,14 +268,7 @@
         }
 
         if (!config.bypass && config.user) {
-            nativeRequest({
-                url: base() + '/api/v2/auth/login',
-                method: 'POST',
-                body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
-                headers: CT_FORM
-            }, function () {
-                execute();
-            });
+            login(function () { execute(); });
         } else {
             execute();
         }
@@ -292,18 +304,20 @@
             return;
         }
 
-        var config = cfg();
         var body = buildAddBody(magnet, title);
-        debugNotify('Отправляю в qBittorrent на роутер...');
+        debugNotify('Отправляю в qBittorrent...');
 
-        makeApiRequest('/api/v2/torrents/add', 'POST', body, function (response) {
+        apiRequest('/api/v2/torrents/add', 'POST', body, function (response) {
             if (response === null || response === undefined) {
-                blindRequest(base() + '/api/v2/torrents/add', 'POST', body);
-            } else if (/Fails/i.test(response)) {
+                // Нативный транспорт недоступен - сообщаем честно
+                notify('Не удалось отправить запрос: нативный транспорт недоступен');
+                return;
+            }
+            if (/Fails/i.test(response)) {
                 notify('qBittorrent: ошибка добавления');
                 return;
             }
-            notify('Добавлено в qBittorrent на роутере ✓');
+            notify('Добавлено в qBittorrent ✓');
             if (typeof onAdded === 'function') onAdded();
         });
     }
@@ -316,13 +330,21 @@
         }
 
         var config = cfg();
-        var body = 'hashes=' + encodeURIComponent(hash) + '&deleteFiles=' + (config.delete_files ? 'true' : 'false');
+        if (config.confirm) {
+            var ok = window.confirm
+                ? window.confirm('Удалить торрент' + (config.delete_files ? ' и файлы с диска' : '') + '?')
+                : true;
+            if (!ok) return;
+        }
+
+        var body = 'hashes=' + encodeURIComponent(hash) +
+                   '&deleteFiles=' + (config.delete_files ? 'true' : 'false');
         debugNotify('Удаляю торрент из qBittorrent...');
 
-        function finishDelete(response) {
+        apiRequest('/api/v2/torrents/delete', 'POST', body, function (response) {
             console.log('[qBittorrent] delete response:', response);
             if (response === null || response === undefined) {
-                blindRequest(base() + '/api/v2/torrents/delete', 'POST', body);
+                notify('Не удалось отправить запрос: нативный транспорт недоступен');
                 return;
             }
             if (/Forbidden|403/i.test(response)) {
@@ -330,27 +352,7 @@
                 return;
             }
             notify(config.delete_files ? 'Торрент и файлы удалены с роутера' : 'Торрент удалён из qBittorrent');
-        }
-
-        function deleteRequest() {
-            nativeRequest({
-                url: base() + '/api/v2/torrents/delete',
-                method: 'POST',
-                body: body,
-                headers: CT_FORM
-            }, finishDelete);
-        }
-
-        if (!config.bypass && config.user) {
-            nativeRequest({
-                url: base() + '/api/v2/auth/login',
-                method: 'POST',
-                body: 'username=' + encodeURIComponent(config.user) + '&password=' + encodeURIComponent(config.pass),
-                headers: CT_FORM
-            }, deleteRequest);
-        } else {
-            deleteRequest();
-        }
+        });
     }
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
@@ -367,8 +369,7 @@
 
         var finalUri = baseUri;
         if (targetFile) {
-            // Подставляем конкретное имя файла (например Street.Fighter.2026.TS.mp4) напрямую к SMB-пути
-            finalUri = baseUri + '/' + encodeURIComponent(targetFile);
+            finalUri = baseUri + '/' + encodePathSegments(targetFile);
         }
 
         debugNotify('Открываю в плеере: ' + finalUri);
@@ -420,11 +421,12 @@
 
     // ================= НАЖАТИЯ =================
 
-    function bindPress(element, handler) {
+    function bindPress(element, handler, lockMs) {
         var last = 0;
+        var lock = typeof lockMs === 'number' ? lockMs : ACTION_LOCK_MS;
         function wrapped(event) {
             var now = Date.now();
-            if (now - last < ACTION_LOCK_MS) return;
+            if (now - last < lock) return;
             last = now;
             if (event) {
                 event.preventDefault();
@@ -458,10 +460,11 @@
                 { name: 'qbit_category', type: 'input', def: DEF_CATEGORY, title: 'Категория', desc: 'Категория торрентов' },
                 { name: 'qbit_auto_cat_path', type: 'trigger', def: DEF_AUTO_CAT_PATH, title: 'Добавлять категорию к пути', desc: 'Авто-поддиректория' },
                 { name: 'qbit_rename', type: 'trigger', def: DEF_RENAME, title: 'Переименовывать торрент', desc: 'Имя раздачи' },
-                { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Проверять добавление', desc: 'Проверка хэша' },
+                { name: 'qbit_confirm', type: 'trigger', def: DEF_CONFIRM, title: 'Подтверждать удаление', desc: 'Спрашивать перед удалением торрента' },
                 { name: 'qbit_delete_files', type: 'trigger', def: DEF_DELETE_FILES, title: 'Удалять файлы с диска', desc: 'При удалении торрента' },
                 { name: 'qbit_always_show', type: 'trigger', def: DEF_ALWAYS_SHOW, title: 'Всегда показывать кнопки управления', desc: 'Не ждать опроса 100% статуса (рекомендуется для роутера)' },
-                { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к папке/файлу', desc: 'Например smb://192.168.1.50/download/' }
+                { name: 'qbit_smb_file', type: 'input', def: DEF_SMB_FILE, title: 'SMB-путь к папке/файлу', desc: 'Например smb://192.168.1.50/download/' },
+                { name: 'qbit_verbose', type: 'trigger', def: DEF_VERBOSE, title: 'Подробные уведомления', desc: 'Показывать отладочные сообщения' }
             ];
 
             params.forEach(function (p) {
@@ -490,23 +493,25 @@
                 '<path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
 
             Lampa.Menu.addButton(icon, 'qBittorrent', function () {
-                Lampa.Controller.toggle('settings');
+                try { Lampa.Controller.toggle('settings'); } catch (e) {}
                 setTimeout(function () {
                     var item = document.querySelector('[data-component="qbit_direct"]');
-                    if (item) item.click();
-                }, 100);
+                    if (!item) return;
+                    try { item.dispatchEvent(new Event('hover:enter')); } catch (e) {}
+                    try { item.click(); } catch (e) {}
+                }, 120);
             });
         } catch (error) {
             console.error('[qBittorrent] Ошибка добавления пункта меню:', error);
         }
     }
 
-    function createButton(className, text, handler) {
+    function createButton(className, text, handler, lockMs) {
         var button = document.createElement('div');
         button.className = 'qbit-direct-btn ' + className + ' selector';
         button.tabIndex = 0;
         button.textContent = text;
-        bindPress(button, handler);
+        bindPress(button, handler, lockMs);
         return button;
     }
 
@@ -517,16 +522,15 @@
             if (!event || event.type !== 'render' || !event.item) return;
 
             var item = event.item.jquery ? event.item[0] : event.item;
-            var data = event.element || {};
+            if (!item || typeof item.querySelector !== 'function') return;
 
+            var data = event.element || event.data || {};
             var magnet = data.MagnetUri || data.magnetUri || '';
-            
-            // Ищем точное имя файла в данных торрента, иначе берем заголовок
+
             var fileName = data.file || data.filename || data.name || data.Title || data.title || '';
-            
             var hash = magnetHash(magnet);
 
-            if (!item || !hash) return;
+            if (!hash) return;
             if (item.querySelector('.qbit-direct-actions[data-hash="' + hash + '"]')) return;
 
             var actions = document.createElement('div');
@@ -535,14 +539,15 @@
 
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
                 qbAdd(magnet, fileName);
-            });
+            }, ACTION_LOCK_MS);
 
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
                 handlePlayerButton(fileName);
-            });
+            }, ACTION_LOCK_MS);
+
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
                 qbDelete(magnet);
-            });
+            }, DELETE_LOCK_MS);
 
             actions.appendChild(addButton);
             actions.appendChild(playerButton);
