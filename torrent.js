@@ -308,7 +308,6 @@
         });
     }
 
-    // Восстановлена надежная функция удаления из первоначального кода
     function qbDelete(magnet) {
         var hash = magnetHash(magnet);
         if (!hash) {
@@ -356,27 +355,34 @@
 
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
-    function openFileInPlayer(fileUri, playerPkg) {
-        var uri = String(fileUri || '').trim();
+    function openFileInPlayer(fileUri, playerPkg, torrentTitle) {
+        var baseUri = String(fileUri || '').trim().replace(/\/+$/, '');
         var pkg = String(playerPkg || '').trim();
+        var title = String(torrentTitle || '').trim();
 
-        if (!uri) {
+        if (!baseUri) {
             notify('Укажите SMB-путь к файлу в настройках qBittorrent');
             return;
         }
 
-        debugNotify('Открываю через SMB в плеере: ' + uri);
+        var finalUri = baseUri;
+        if (title) {
+            var cleanTitle = title.replace(/[<>:"/\\|?*]/g, '').trim();
+            finalUri = baseUri + '/' + encodeURIComponent(cleanTitle);
+        }
+
+        debugNotify('Открываю в плеере: ' + finalUri);
 
         try {
             if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
-                Lampa.Android.openPlayer(uri, { package: pkg, title: '' });
+                Lampa.Android.openPlayer(finalUri, { package: pkg, title: title });
                 return;
             }
         } catch (e) {}
 
         try {
             if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function') {
-                AndroidJS.openPlayer(uri, pkg, '', 'video/*');
+                AndroidJS.openPlayer(finalUri, pkg, title, 'video/*');
                 return;
             }
         } catch (e) {}
@@ -385,7 +391,7 @@
             if (window.AndroidJS && typeof AndroidJS.startActivity === 'function') {
                 AndroidJS.startActivity(JSON.stringify({
                     action: 'android.intent.action.VIEW',
-                    data: uri,
+                    data: finalUri,
                     type: 'video/*',
                     package: pkg
                 }));
@@ -395,7 +401,7 @@
 
         try {
             if (window.Android && typeof Android.openPlayer === 'function') {
-                Android.openPlayer(uri, { package: pkg, title: '' });
+                Android.openPlayer(finalUri, { package: pkg, title: title });
                 return;
             }
         } catch (e) {}
@@ -403,13 +409,13 @@
         notify('Не удалось открыть файл в плеере');
     }
 
-    function handlePlayerButton() {
+    function handlePlayerButton(title) {
         var config = cfg();
         if (!config.player_package || config.player_package === 'custom') {
-            notify('Плеер не выбран. Зайдите в настройки qBittorrent.');
+            notify('Плеер не выбран в настройках.');
             return;
         }
-        openFileInPlayer(config.smb_file, config.player_package);
+        openFileInPlayer(config.smb_file, config.player_package, title);
     }
 
     // ================= НАЖАТИЯ =================
@@ -520,7 +526,6 @@
             if (!item || !hash) return;
             if (item.querySelector('.qbit-direct-actions[data-hash="' + hash + '"]')) return;
 
-            var config = cfg();
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
             actions.setAttribute('data-hash', hash);
@@ -530,7 +535,7 @@
             });
 
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
-                handlePlayerButton();
+                handlePlayerButton(title);
             });
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
                 qbDelete(magnet);
