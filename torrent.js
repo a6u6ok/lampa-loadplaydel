@@ -15,10 +15,13 @@
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';
     var DEF_SMB_FILE = 'smb://192.168.1.50/Media/';
+    
+    // Новая настройка: всегда показывать кнопки плеера и удаления
+    var DEF_ALWAYS_SHOW_BUTTONS = false; 
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
-    var POLL_INTERVAL = 3000; // Интервал проверки прогресса (3 секунды)
+    var POLL_INTERVAL = 3000;
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -84,7 +87,8 @@
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', DEF_AUTO_CAT_PATH), DEF_AUTO_CAT_PATH),
             delete_files: isTrue(storeGet('qbit_delete_files', DEF_DELETE_FILES), DEF_DELETE_FILES),
             player_package: storeGet('qbit_player_package', DEF_PLAYER_PACKAGE),
-            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE)
+            smb_file: storeGet('qbit_smb_file', DEF_SMB_FILE),
+            always_show_buttons: isTrue(storeGet('qbit_always_show_buttons', DEF_ALWAYS_SHOW_BUTTONS), DEF_ALWAYS_SHOW_BUTTONS)
         };
     }
 
@@ -225,8 +229,7 @@
 
         var config = cfg();
         var body = buildAddBody(magnet, title);
-        var hash = magnetHash(magnet);
-
+        
         debugNotify('Отправляю в qBittorrent...');
 
         function finishAdd(response) {
@@ -460,6 +463,15 @@
 
             Lampa.SettingsApi.addParam({
                 component: 'qbit_direct',
+                param: { name: 'qbit_always_show_buttons', type: 'trigger', default: DEF_ALWAYS_SHOW_BUTTONS },
+                field: { 
+                    name: 'Всегда показывать Плеер и Удалить', 
+                    description: 'Не скрывать кнопки и не менять текст кнопки добавления на проценты' 
+                }
+            });
+
+            Lampa.SettingsApi.addParam({
+                component: 'qbit_direct',
                 param: { name: 'qbit_player_package', type: 'select', values: PLAYERS_LIST, default: '' },
                 field: { name: 'Видеоплеер', description: 'Выберите плеер' }
             });
@@ -505,7 +517,6 @@
         return button;
     }
 
-    // Функция проверки прогресса торрента
     function checkTorrentProgress(hash, onProgress) {
         if (!hash) return;
 
@@ -519,7 +530,7 @@
                 var data = JSON.parse(response);
                 var torrents = data.torrents || data;
                 if (Array.isArray(torrents) && torrents.length > 0) {
-                    var progress = torrents[0].progress; // от 0 до 1
+                    var progress = torrents[0].progress;
                     onProgress(progress);
                 }
             } catch (e) {}
@@ -540,17 +551,26 @@
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title = data.Title || data.title || '';
             var hash = magnetHash(magnet);
+            
+            var config = cfg();
+            var alwaysShow = config.always_show_buttons;
 
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Кнопка Добавить
+            // Создаем кнопки
             var addButton = createButton('qbit-direct-add', '⬇ В qBittorrent', function () {
+                if (alwaysShow) {
+                    // Если включен режим постоянного отображения, просто добавляем без процентов
+                    qbAdd(magnet, title);
+                    return;
+                }
+
+                // Иначе — логика с прогрессом
                 addButton.textContent = '⏳ 0%';
                 addButton.classList.add('qbit-loading');
                 
                 qbAdd(magnet, title, function() {
-                    // Начинаем опрос прогресса
                     if (!hash) return;
                     
                     var pollTimer = setInterval(function () {
@@ -562,9 +582,9 @@
                         checkTorrentProgress(hash, function (progress) {
                             if (progress >= 1) {
                                 clearInterval(pollTimer);
-                                addButton.style.display = 'none'; // Скрываем кнопку добавления
-                                playerButton.style.display = 'inline-flex'; // Показываем плеер
-                                deleteButton.style.display = 'inline-flex'; // Показываем удалить
+                                addButton.style.display = 'none';
+                                playerButton.style.display = 'inline-flex';
+                                deleteButton.style.display = 'inline-flex';
                                 notify('Загрузка завершена!');
                             } else {
                                 addButton.textContent = '⏳ ' + Math.floor(progress * 100) + '%';
@@ -574,17 +594,19 @@
                 });
             });
 
-            // Кнопка Плеер (изначально скрыта)
             var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
                 handlePlayerButton();
             });
-            playerButton.style.display = 'none';
 
-            // Кнопка Удалить (изначально скрыта)
             var deleteButton = createButton('qbit-direct-delete', '🗑 Удалить', function () {
                 qbDelete(magnet);
             });
-            deleteButton.style.display = 'none';
+
+            // Управляем видимостью в зависимости от настройки
+            if (!alwaysShow) {
+                playerButton.style.display = 'none';
+                deleteButton.style.display = 'none';
+            }
 
             actions.appendChild(addButton);
             actions.appendChild(playerButton);
