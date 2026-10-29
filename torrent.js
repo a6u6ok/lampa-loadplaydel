@@ -601,8 +601,8 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Кнопка добавления теперь называется "qBittorrent"
-            var addButton = createButton('qbit-direct-add', 'qBittorrent', function () {
+            // Кнопка добавления "qB qBittorrent"
+            var addButton = createButton('qbit-direct-add', 'qB qBittorrent', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
                     return;
@@ -635,7 +635,8 @@
                 });
             });
 
-            var playerButton = createButton('qbit-direct-player', '▶ Открыть плеер', function () {
+            // Кнопка плеера "▶ Плеер" (без слова Открыть)
+            var playerButton = createButton('qbit-direct-player', '▶ Плеер', function () {
                 handlePlayerButton();
             });
 
