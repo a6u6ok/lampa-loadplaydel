@@ -1,155 +1,380 @@
+
 (function () {
-  'use strict';
+    'use strict';
 
-  // ================= НАСТРОЙКИ =================
-  var QB_URL = 'http://192.168.1.1:9080';
-  var QB_USER = 'admin';
-  var QB_PASS = 'password'; // !!! ОБЯЗАТЕЛЬНО ЗАМЕНИ НА СВОЙ ПАРОЛЬ !!!
-  // Путь на диске роутера (Entware) — узнай через df -h / lsblk и поставь сюда
-  var savePath = '/mnt/sda1/downloads';
-  // ============================================
+    var FLAG = '__lampa_qbittorrent_sender';
+    if (window[FLAG]) return;
+    window[FLAG] = true;
 
-  /**
-   * Получает CSRF‑токен от qBittorrent API
-   */
-  function getQbToken(cb) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', QB_URL + '/api/v2/auth/csrfToken', true);
-    xhr.setRequestHeader('Authorization', 'Basic ' + btoa(QB_USER + ':' + QB_PASS));
+    function init() {
+        var L = window.Lampa;
 
-    xhr.onload = function () {
-      if (xhr.status === 200) {
-        cb(xhr.responseText);
-      } else {
-        console.error('qBittorrent token error', xhr.status, xhr.responseText);
-        cb(null);
-      }
-    };
-    xhr.onerror = function () { cb(null); };
-    xhr.send();
-  }
+        var SETTINGS = {
+            server: 'qbt_server',
+            login: 'qbt_login',
+            password: 'qbt_password',
+            savepath: 'qbt_savepath',
+            category: 'qbt_category'
+        };
 
-  /**
-   * Отправляет magnet или .torrent URL в qBittorrent
-   */
-  function addTorrentToQb(link, cb) {
-    getQbToken(function (token) {
-      if (!token) {
-        cb('Не удалось получить CSRF‑токен (проверь логин/пароль и доступность API)');
-        return;
-      }
+        // -------------------------
+        // Настройки
+        // -------------------------
 
-      var formData = new FormData();
-      formData.append('urls', link);
-      formData.append('save_path', savePath);
-
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', QB_URL + '/api/v2/torrents/add', true);
-      xhr.setRequestHeader('X-CSRF-Token', token);
-      xhr.setRequestHeader('Authorization', 'Basic ' + btoa(QB_USER + ':' + QB_PASS));
-
-      xhr.onload = function () {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          cb(null);
-        } else {
-          cb('Ошибка qBittorrent: ' + xhr.status + ' ' + xhr.responseText);
+        function field(name) {
+            return String(L.Storage.field(name) || '').trim();
         }
-      };
-      xhr.onerror = function () { cb('Ошибка сети (недоступен роутер или порт)'); };
-      xhr.send(formData);
-    });
-  }
 
-  /**
-   * Создаёт кнопку на карточке и вешает обработчик
-   * cardEl: DOM‑элемент карточки
-   * magnetLink: magnet‑ссылка (или .torrent URL)
-   */
-  function injectQbButton(cardEl, magnetLink) {
-    if (!cardEl || !magnetLink) return;
-
-    // Не создаём кнопку дважды
-    var existing = cardEl.querySelector('[data-qb-btn]');
-    if (existing) return;
-
-    var btn = document.createElement('button');
-    btn.innerText = 'qBittorrent';
-    btn.className = 'button-style'; // если в Lampa есть такой класс — будет красиво
-    btn.setAttribute('data-qb-btn', '1');
-    // Простые стили, чтобы кнопка была видна даже без классов Lampa
-    btn.style.margin = '4px 4px 0 0';
-    btn.style.padding = '6px 12px';
-    btn.style.fontSize = '13px';
-    btn.style.cursor = 'pointer';
-
-    btn.onclick = function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-
-      btn.innerText = 'Отправка...';
-      btn.disabled = true;
-
-      addTorrentToQb(magnetLink, function (err) {
-        if (err) {
-          alert('Ошибка: ' + err);
-          console.error(err);
-        } else {
-          alert('Торрент отправлен в qBittorrent');
+        function config() {
+            return {
+                server: field(SETTINGS.server).replace(/\/+$/, ''),
+                login: field(SETTINGS.login),
+                password: String(L.Storage.get(SETTINGS.password, '') || ''),
+                savepath: field(SETTINGS.savepath),
+                category: field(SETTINGS.category)
+            };
         }
-        btn.innerText = 'qBittorrent';
-        btn.disabled = false;
-      });
-    };
 
-    // Ищем блок действий. Если нет — кнопка встанет в конец карточки.
-    var actionsBlock = cardEl.querySelector('.card-actions') || cardEl;
-    actionsBlock.appendChild(btn);
-  }
+        L.SettingsApi.addComponent({
+            component: 'qbt_sender',
+            name: 'qBittorrent',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg>'
+        });
 
-  /**
-   * Пытается вытащить magnet‑ссылку из карточки.
-   * Это эвристика: зависит от того, как плагин хранит данные.
-   * Если у тебя есть доступ к объекту данных — лучше передавать его явно.
-   */
-  function extractMagnetFromCard(cardEl) {
-    // Вариант 1: ищем ссылку в data‑атрибутах (частый случай в плагинах)
-    var magnet = cardEl.getAttribute('data-magnet');
-    if (magnet) return magnet;
+        function addSetting(name, title, placeholder, def) {
+            L.SettingsApi.addParam({
+                component: 'qbt_sender',
+                param: {
+                    name: name,
+                    type: 'input',
+                    values: 'string',
+                    default: def || '',
+                    placeholder: placeholder || ''
+                },
+                field: {
+                    name: title
+                }
+            });
+        }
 
-    // Вариант 2: ищем в data-url (если ссылка на .torrent)
-    var url = cardEl.getAttribute('data-url');
-    if (url) return url;
+        addSetting(
+            SETTINGS.server,
+            'Адрес qBittorrent WebUI',
+            'http://192.168.1.1:8080'
+        );
 
-    // Вариант 3: если внутри карточки есть ссылка с href, начинающимся на magnet:
-    var link = cardEl.querySelector('a[href^="magnet:"]');
-    if (link && link.href) return link.href;
+        addSetting(
+            SETTINGS.login,
+            'Логин qBittorrent',
+            'admin'
+        );
 
-    return null;
-  }
+        // Пароль сохраняется отдельно
+        addSetting(
+            'qbt_password_input',
+            'Пароль qBittorrent',
+            'Введите пароль'
+        );
 
-  /**
-   * Сканирует DOM и добавляет кнопки на все найденные карточки.
-   * Запускается периодически, чтобы подхватывать динамически создаваемые карточки.
-   */
-  function scanCardsAndAddButtons() {
-    var cards = document.querySelectorAll('.card'); // класс карточки в Lampa
+        // Скрываем сохранённый пароль из обычного поля
+        L.SettingsApi.addParam({
+            component: 'qbt_sender',
+            param: {
+                name: 'qbt_password_input',
+                type: 'input',
+                values: 'string',
+                default: '',
+                placeholder: 'Новый пароль'
+            },
+            field: {
+                name: 'Изменить пароль',
+                description: 'Пустое значение не меняет сохранённый пароль'
+            },
+            onChange: function (value) {
+                if (value) {
+                    L.Storage.set(SETTINGS.password, value);
+                }
+                L.Storage.set('qbt_password_input', '');
+            }
+        });
 
-    cards.forEach(function (card) {
-      var magnet = extractMagnetFromCard(card);
-      if (magnet) {
-        injectQbButton(card, magnet);
-      }
-    });
-  }
+        addSetting(
+            SETTINGS.savepath,
+            'Папка загрузки на SSD',
+            '/opt/storage/downloads'
+        );
 
-  // Запускаем сканирование сразу и потом каждые 1.5 секунды
-  scanCardsAndAddButtons();
-  setInterval(scanCardsAndAddButtons, 1500);
+        addSetting(
+            SETTINGS.category,
+            'Категория',
+            'Lampa'
+        );
 
-  // Экспортируем в глобальную область, если захочешь вызывать вручную
-  window.LampaQbPlugin = {
-    injectQbButton: injectQbButton,
-    addTorrentToQb: addTorrentToQb,
-    savePath: savePath
-  };
+        // -------------------------
+        // Уведомления
+        // -------------------------
+
+        function notify(message, style) {
+            L.Noty.show(message, style ? { style: style } : {});
+        }
+
+        // -------------------------
+        // HTTP запросы
+        // -------------------------
+
+        function request(method, url, body, callback) {
+            var xhr = new XMLHttpRequest();
+
+            xhr.open(method, url, true);
+            xhr.timeout = 15000;
+            xhr.withCredentials = true;
+
+            if (body instanceof FormData) {
+                xhr.send(body);
+            } else if (body) {
+                xhr.setRequestHeader(
+                    'Content-Type',
+                    'application/x-www-form-urlencoded'
+                );
+                xhr.send(body);
+            } else {
+                xhr.send();
+            }
+
+            xhr.onload = function () {
+                callback(xhr.status, xhr.responseText, xhr);
+            };
+
+            xhr.onerror = function () {
+                callback(0, '', xhr);
+            };
+
+            xhr.ontimeout = function () {
+                callback(0, '', xhr);
+            };
+        }
+
+        function encode(data) {
+            var result = [];
+
+            Object.keys(data).forEach(function (key) {
+                if (data[key] !== undefined && data[key] !== null) {
+                    result.push(
+                        encodeURIComponent(key) + '=' +
+                        encodeURIComponent(data[key])
+                    );
+                }
+            });
+
+            return result.join('&');
+        }
+
+        // -------------------------
+        // Авторизация
+        // -------------------------
+
+        function login(callback) {
+            var c = config();
+
+            if (!c.server || !c.login || !c.password) {
+                notify('Заполните настройки qBittorrent', 'error');
+                return;
+            }
+
+            request(
+                'POST',
+                c.server + '/api/v2/auth/login',
+                encode({
+                    username: c.login,
+                    password: c.password
+                }),
+                function (status, response) {
+                    if (status === 200 && response.trim() === 'Ok.') {
+                        callback(true);
+                    } else {
+                        callback(false);
+                    }
+                }
+            );
+        }
+
+        // -------------------------
+        // Добавление торрента
+        // -------------------------
+
+        function addTorrent(link, title) {
+            var c = config();
+
+            if (!c.server) {
+                notify('Не указан адрес qBittorrent', 'error');
+                return;
+            }
+
+            if (!link) {
+                notify('Ссылка на торрент не найдена', 'error');
+                return;
+            }
+
+            notify('Подключение к qBittorrent...');
+
+            login(function (success) {
+                if (!success) {
+                    notify(
+                        'Ошибка авторизации qBittorrent',
+                        'error'
+                    );
+                    return;
+                }
+
+                var data = new FormData();
+
+                data.append('urls', link);
+
+                if (c.savepath) {
+                    data.append('savepath', c.savepath);
+                }
+
+                if (c.category) {
+                    data.append('category', c.category);
+                }
+
+                data.append('paused', 'false');
+
+                request(
+                    'POST',
+                    c.server + '/api/v2/torrents/add',
+                    data,
+                    function (status, response) {
+                        if (status === 200 && response.trim() === 'Ok.') {
+                            notify(
+                                'Торрент отправлен в qBittorrent: ' +
+                                (title || ''),
+                                'success'
+                            );
+                        } else {
+                            notify(
+                                'Не удалось добавить торрент. HTTP: ' +
+                                status,
+                                'error'
+                            );
+                        }
+                    }
+                );
+            });
+        }
+
+        // -------------------------
+        // Получение ссылки
+        // -------------------------
+
+        function getMagnet(element) {
+            if (!element) return '';
+
+            if (element.MagnetUri) {
+                return element.MagnetUri;
+            }
+
+            if (/^magnet:/i.test(element.Link || '')) {
+                return element.Link;
+            }
+
+            if (/^https?:\/\//i.test(element.Link || '') &&
+                /\.torrent(?:[?#]|$)/i.test(element.Link)) {
+                return element.Link;
+            }
+
+            if (element.magnet) {
+                return element.magnet;
+            }
+
+            return '';
+        }
+
+        function getTitle(element) {
+            return element
+                ? String(
+                    element.Title ||
+                    element.title ||
+                    element.name ||
+                    element.path_human ||
+                    ''
+                )
+                : '';
+        }
+
+        // -------------------------
+        // Добавление кнопки
+        // -------------------------
+
+        function addMenu(menu, previous, link, title) {
+            if (!link || !menu) return;
+
+            menu.push({
+                title: 'Скачать в qBittorrent',
+
+                onSelect: function () {
+                    addTorrent(link, title);
+
+                    if (previous) {
+                        L.Controller.toggle(previous);
+                    }
+                }
+            });
+        }
+
+        // Список торрент-раздач
+        L.Listener.follow('torrent', function (e) {
+            if (
+                e.type !== 'onlong' ||
+                !e.menu ||
+                !e.element
+            ) return;
+
+            var element = e.element;
+            var previous = L.Controller.enabled().name;
+
+            addMenu(
+                e.menu,
+                previous,
+                getMagnet(element),
+                getTitle(element)
+            );
+        });
+
+        // Файлы внутри торрент-раздачи
+        L.Listener.follow('torrent_file', function (e) {
+            if (
+                e.type !== 'onlong' ||
+                !e.menu ||
+                !e.element
+            ) return;
+
+            var element = e.element;
+            var previous = L.Controller.enabled().name;
+
+            var link = '';
+
+            if (element.torrent_hash) {
+                link = 'magnet:?xt=urn:btih:' +
+                    element.torrent_hash;
+            }
+
+            addMenu(
+                e.menu,
+                previous,
+                link,
+                getTitle(element)
+            );
+        });
+
+        notify('qBittorrent Sender загружен', 'success');
+    }
+
+    if (window.appready) {
+        init();
+    } else {
+        Lampa.Listener.follow('app', function (e) {
+            if (e.type === 'ready') init();
+        });
+    }
 })();
