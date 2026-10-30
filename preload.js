@@ -1,167 +1,108 @@
 (function () {
-    'use strict';
+  'use strict';
 
-    if (window.torrserver_preload_ready) return;
-    window.torrserver_preload_ready = true;
+  // ================= НАСТРОЙКИ =================
+  var QB_URL = 'http://192.168.1.1:9080'; // роутер + порт
+  var QB_USER = 'admin';                 // логин qBittorrent
+  var QB_PASS = 'password';              // пароль — обязательно поменяй!
+  // ============================================
 
-    var ACTION_LOCK_MS = 800;
+  function getQbToken(cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', QB_URL + '/api/v2/auth/csrfToken', true);
+    xhr.withCredentials = false;
+    xhr.setRequestHeader('Authorization', 'Basic ' + btoa(QB_USER + ':' + QB_PASS));
 
-    // ================= УТИЛИТЫ =================
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        cb(xhr.responseText);
+      } else {
+        console.error('qBittorrent token error', xhr.status, xhr.responseText);
+        cb(null);
+      }
+    };
+    xhr.onerror = function () {
+      cb(null);
+    };
+    xhr.send();
+  }
 
-    function notify(text) {
-        try {
-            if (window.Lampa && Lampa.Noty) { Lampa.Noty.show(text); return; }
-        } catch (e) { console.error('[TorrServer Preload] notify:', e); }
-        console.log('[TorrServer Preload]', text);
-    }
+  function addTorrentToQb(link, savePath, cb) {
+    getQbToken(function (token) {
+      if (!token) {
+        cb('Не удалось получить CSRF-токен (проверь логин/пароль и доступность API)');
+        return;
+      }
 
-    function storeGet(key, defaultValue) {
-        try {
-            if (window.Lampa && Lampa.Storage) {
-                var v = Lampa.Storage.get(key, defaultValue);
-                if (v !== undefined && v !== null) return v;
-            }
-        } catch (e) { console.error('[TorrServer Preload] storeGet:', e); }
-        return defaultValue;
-    }
+      var formData = new FormData();
+      formData.append('urls', link);
+      if (savePath) {
+        formData.append('save_path', savePath);
+      }
 
-    function getTorrServerUrl() {
-        var one = storeGet('torrserver_url', '');
-        var two = storeGet('torrserver_url_two', '');
-        var useTwo = storeGet('torrserver_use_link', '') === 'two';
-        return useTwo ? (two || one) : (one || two);
-    }
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', QB_URL + '/api/v2/torrents/add', true);
+      xhr.setRequestHeader('X-CSRF-Token', token);
+      xhr.setRequestHeader('Authorization', 'Basic ' + btoa(QB_USER + ':' + QB_PASS));
 
-    function bindPress(element, handler) {
-        var last = 0;
-        function wrapped(event) {
-            var now = Date.now();
-            if (now - last < ACTION_LOCK_MS) return;
-            last = now;
-            if (event) {
-                event.preventDefault();
-                event.stopPropagation();
-                if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-            }
-            handler(event);
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          cb(null);
+        } else {
+          cb('Ошибка qBittorrent: ' + xhr.status + ' ' + xhr.responseText);
         }
-        element.addEventListener('hover:enter', wrapped);
-        element.addEventListener('click', wrapped);
-    }
+      };
+      xhr.onerror = function () {
+        cb('Ошибка сети (недоступен роутер или порт)');
+      };
 
-    // ================= TORRSERVER =================
+      xhr.send(formData);
+    });
+  }
 
-    function addTorrentToServer(magnetUri, title, onDone) {
-        var url = getTorrServerUrl();
-        if (!url) {
-            notify('Сначала настройте адрес TorrServer');
-            return;
+  function injectQbButton(cardEl, torrentData) {
+    var existing = cardEl.querySelector('[data-qb-btn]');
+    if (existing) return;
+
+    var btn = document.createElement('button');
+    btn.innerText = 'qBittorrent';
+    btn.className = 'button-style'; // подставь реальный класс кнопок Lampa
+    btn.setAttribute('data-qb-btn', '1');
+
+    btn.onclick = function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      var link = torrentData.magnet || torrentData.url;
+      if (!link) {
+        alert('Нет ссылки на торрент');
+        return;
+      }
+
+      // !!! ВСТАВЬ СЮДА РЕАЛЬНЫЙ ПУТЬ В ФС РОУТЕРА, НАЙДЕННЫЙ ЧЕРЕЗ df/ls !!!
+      var savePath = '/mnt/sda1/downloads'; 
+
+      btn.innerText = 'Отправка...';
+      btn.disabled = true;
+
+      addTorrentToQb(link, savePath, function (err) {
+        if (err) {
+          alert('Ошибка: ' + err);
+          console.error(err);
+        } else {
+          alert('Торрент отправлен в qBittorrent');
         }
+        btn.innerText = 'qBittorrent';
+        btn.disabled = false;
+      });
+    };
 
-        if (!magnetUri || magnetUri.indexOf('magnet:') !== 0) {
-            notify('У текущего торрента нет Magnet-ссылки');
-            return;
-        }
+    var actionsBlock = cardEl.querySelector('.card-actions') || cardEl;
+    actionsBlock.appendChild(btn);
+  }
 
-        notify('Добавление в TorrServer...');
-
-        var payload = {
-            action: 'add',
-            link: magnetUri,
-            title: '[LAMPA] ' + (title || 'Preload'),
-            save_to_db: true
-        };
-
-        var network = new Lampa.Reguest();
-        network.silent(
-            url.replace(/\/$/, '') + '/torrents',
-            function (data) {
-                var hash = data && (data.hash || data.Hash);
-                if (hash) {
-                    notify('Предзагрузка запущена: ' + hash.slice(0, 8) + '...');
-                    if (onDone) onDone(hash);
-                } else {
-                    notify('TorrServer не вернул Hash');
-                }
-            },
-            function (err) {
-                console.error('[TorrServer Preload]', err);
-                notify('Ошибка предзагрузки, проверьте TorrServer');
-            },
-            JSON.stringify(payload),
-            { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
-    }
-
-    // ================= КНОПКА НА КАРТОЧКЕ =================
-
-    function createButton(text, handler) {
-        var button = document.createElement('div');
-        button.className = 'ts-preload-btn selector';
-        button.tabIndex = 0;
-        button.textContent = text;
-        bindPress(button, handler);
-        return button;
-    }
-
-    function initTorrentButton() {
-        if (!window.Lampa || !Lampa.Listener) {
-            console.error('[TorrServer Preload] Lampa.Listener not available');
-            return;
-        }
-
-        Lampa.Listener.follow('torrent', function (event) {
-            if (!event || event.type !== 'render' || !event.item) return;
-
-            var item = event.item.jquery ? event.item[0] : event.item;
-            var data = event.element || {};
-
-            if (!item || item.querySelector('.ts-preload-btn')) return;
-
-            var magnet = data.MagnetUri || data.magnetUri || data.magnet || '';
-            var title = data.Title || data.title || '';
-
-            if (!magnet) return;
-
-            var button = createButton('⬇ Предзагрузка', function () {
-                addTorrentToServer(magnet, title, function (hash) {
-                    button.textContent = '✔ В очереди';
-                    button.classList.add('ts-preload-done');
-                });
-            });
-
-            item.appendChild(button);
-        });
-    }
-
-    // ================= СТИЛИ =================
-
-    function addStyles() {
-        if (document.getElementById('ts-preload-style')) return;
-        var style = document.createElement('style');
-        style.id = 'ts-preload-style';
-        style.textContent =
-            '.ts-preload-btn{display:inline-flex;align-items:center;justify-content:center;margin:8px;padding:10px 18px;background:#2a3a5a;color:white;border:2px solid #5a7ab0;border-radius:6px;font-size:18px;white-space:nowrap;}' +
-            '.ts-preload-btn.focus{border-color:white;background:#3a5a8a;}' +
-            '.ts-preload-btn.ts-preload-done{background:#1f4b3a;border-color:#3fae7a;pointer-events:none;opacity:0.9;}';
-        document.head.appendChild(style);
-    }
-
-    // ================= ИНИЦИАЛИЗАЦИЯ =================
-
-    function initializePlugin() {
-        try {
-            addStyles();
-            initTorrentButton();
-            console.log('[TorrServer Preload] Плагин загружен');
-        } catch (e) {
-            console.error('[TorrServer Preload] init:', e);
-        }
-    }
-
-    if (window.Lampa && Lampa.Listener) {
-        initializePlugin();
-    } else {
-        document.addEventListener('appready', initializePlugin);
-    }
+  window.LampaQbPlugin = {
+    injectQbButton: injectQbButton,
+    addTorrentToQb: addTorrentToQb
+  };
 })();
