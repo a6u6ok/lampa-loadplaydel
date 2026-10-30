@@ -69,7 +69,7 @@
             action: 'add',
             link: magnetUri,
             title: '[LAMPA] ' + (title || 'Preload'),
-            save_to_db: false
+            save_to_db: true
         };
 
         var network = new Lampa.Reguest();
