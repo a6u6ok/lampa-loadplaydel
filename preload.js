@@ -546,16 +546,13 @@
 
     // ================= КНОПКИ В КАРТОЧКЕ И ПРОГРЕСС =================
 
-    // Теперь функция принимает только иконку и текст для внутреннего счетчика (если нужно)
     function createButton(className, text, handler, iconSvg) {
         var button = document.createElement('div');
         button.className = 'qbit-direct-btn ' + className + ' selector';
         button.tabIndex = 0;
         
-        // Вставляем только иконку
         button.innerHTML = iconSvg;
         
-        // Если передан текст (например, "qB"), добавляем его мелким шрифтом под иконкой (для кнопки добавления)
         if (text) {
             var textSpan = document.createElement('span');
             textSpan.textContent = text;
@@ -617,19 +614,16 @@
             var actions = document.createElement('div');
             actions.className = 'qbit-direct-actions';
 
-            // Иконки
             var downloadIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
             var playIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
             var deleteIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
 
-            // Кнопка добавления (с иконкой и текстом "qB" внутри)
             var addButton = createButton('qbit-direct-add', 'qB', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
                     return;
                 }
 
-                // При загрузке убираем "qB" и пишем проценты
                 addButton.innerHTML = downloadIcon + '<span class="qbit-btn-text">0%</span>';
                 addButton.classList.add('qbit-loading');
                 
@@ -658,12 +652,10 @@
                 });
             }, downloadIcon);
 
-            // Кнопка плеера (только иконка)
             var playerButton = createButton('qbit-direct-player', '', function () {
                 handlePlayerButton();
             }, playIcon);
 
-            // Кнопка удаления (только иконка)
             var deleteButton = createButton('qbit-direct-delete', '', function () {
                 qbDelete(magnet);
             }, deleteIcon);
@@ -694,23 +686,19 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Разрешаем карточкам не обрезать контент, выходящий за их пределы
-                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important;}' +
+                    // Карточка должна быть relative, не обрезать контент и иметь отступ слева под кнопки
+                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important; padding-left: 60px !important;}' +
                     
-                    // Выносим контейнер кнопок за пределы карточки (вправо на 60 пикселей)
-                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:-60px;top:0;bottom:0;z-index:999;gap:6px;}' +
+                    // Переносим кнопки ВЛЕВО и центрируем
+                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;left:5px;top:0;bottom:0;z-index:999;gap:6px;}' +
                     
                     // Круглые кнопки только с иконками
                     '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:44px;background:#27ae60;color:white;border:2px solid transparent;border-radius:50%;cursor:pointer;transition:all 0.2s;box-sizing:border-box;}' +
                     '.qbit-direct-btn.focus{border-color:white;background:#2ecc71;transform:scale(1.1);}' +
                     
-                    // Иконки
                     '.qbit-direct-btn svg{width:22px;height:22px;fill:white;}' +
-                    
-                    // Текст внутри кнопки (qB или проценты)
                     '.qbit-btn-text{font-size:10px;font-weight:bold;margin-top:-2px;line-height:1;}' +
                     
-                    // Цвета кнопок
                     '.qbit-direct-player{background:#3498db;}' +
                     '.qbit-direct-player.focus{background:#5dade2;}' +
                     '.qbit-direct-delete{background:#e74c3c;}' +
