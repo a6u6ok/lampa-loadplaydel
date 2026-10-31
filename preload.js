@@ -1,7 +1,7 @@
 // ============================================================================
 // Плагин qBittorrent для Lampa (Keenetic + Entware + SMB).
 // На основе https://github.com/kostya4000/lampa-qbit. Доработан для запуска видео по SMB.
-// Настройки задаются через мастер при первом использовании и хранятся в Lampa.Storage.
+// Настройки задаются через мастер при первом использовании и хранятся в Lampa.Storage. 
 // ============================================================================
 
 (function () {
@@ -24,7 +24,7 @@
     });
 
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
-
+  
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
     var EXAMPLE_SAVEPATH = '/mnt/storage/torrents';
     var EXAMPLE_SMB_FILE = 'smb://192.168.1.1/MEDIA/';
@@ -735,52 +735,6 @@
         return result;
     }
 
-    // ================= ПОИСК ВИДЕО ВО ВЛОЖЕННЫХ ПАПКАХ =================
-
-    // Выбираем видеофайл: сначала пробуем найти видео в корне торрента
-    // (без вложенных папок), если нет — ищем самое большое видео
-    // среди всех полностью скачанных файлов, включая вложенные папки.
-    function pickVideoFile(files, torrentName) {
-        var torrentNameNorm = String(torrentName || '')
-            .replace(/\\/g, '/')
-            .replace(/\/+$/, '');
-
-        function relativeName(name) {
-            var normalized = String(name || '').replace(/\\/g, '/');
-            if (torrentNameNorm && normalized.indexOf(torrentNameNorm + '/') === 0) {
-                return normalized.substring(torrentNameNorm.length + 1);
-            }
-            return normalized;
-        }
-
-        function isRootFile(name) {
-            var rel = relativeName(name);
-            return rel.indexOf('/') === -1;
-        }
-
-        // Только полностью скачанные видео.
-        var videoFiles = files.filter(function (file) {
-            return isVideoFile(file.name) &&
-                Number(file.progress) >= 0.999999;
-        });
-
-        if (!videoFiles.length) return null;
-
-        // 1) Видео в корне торрента.
-        var rootVideos = videoFiles.filter(function (file) {
-            return isRootFile(file.name);
-        });
-
-        var pool = rootVideos.length ? rootVideos : videoFiles;
-
-        // 2) Самое большое видео первым.
-        pool.sort(function (a, b) {
-            return Number(b.size) - Number(a.size);
-        });
-
-        return pool[0];
-    }
-
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
     // Выбор плеера не задаётся в плагине. Если пакет не указан —
@@ -916,12 +870,23 @@
                     return;
                 }
 
-                var selectedFile = pickVideoFile(files, torrent.name);
+                // Только полностью скачанные видео.
+                var videoFiles = files.filter(function (file) {
+                    return isVideoFile(file.name) &&
+                        Number(file.progress) >= 0.999999;
+                });
 
-                if (!selectedFile) {
+                if (!videoFiles.length) {
                     notify('Нет полностью скачанных видеофайлов');
                     return;
                 }
+
+                // Самое большое видео первым.
+                videoFiles.sort(function (a, b) {
+                    return Number(b.size) - Number(a.size);
+                });
+
+                var selectedFile = videoFiles[0];
 
                 var fileTitle = String(selectedFile.name)
                     .replace(/\\/g, '/')
@@ -994,8 +959,8 @@
             });
 
             // Значения хранятся в Lampa.Storage и переживают обновления.
-            // Пустые поля показывают «Не заполнено» (см. syncSettingPlace
-                var params = [
+            // Пустые поля показывают «Не заполнено» (см. syncSettingPlaceholders).
+            var params = [
                 ['qbit_url', 'input', '', 'Адрес сервера', 'Пример: ' + EXAMPLE_URL],
                 ['qbit_user', 'input', '', 'Логин', 'Логин Web UI'],
                 ['qbit_pass', 'input', '', 'Пароль', 'Пароль Web UI'],
@@ -1033,7 +998,6 @@
             }
 
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
-
             Lampa.Menu.addButton(icon, 'qBittorrent', function () {
                 Lampa.Controller.toggle('settings');
                 setTimeout(function () {
