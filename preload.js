@@ -600,11 +600,8 @@
 
             if (!item) return;
 
-            // Проверяем, не обернута ли карточка уже
-            if (item.parentNode && item.parentNode.classList.contains('qbit-wrapper')) return;
-
-            // Ищем контейнер, в который вложена карточка (обычно это div)
             var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
+            
             if (container.querySelector('.qbit-direct-actions')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
@@ -672,13 +669,7 @@
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
-            // Оборачиваем карточку в новый Flex-контейнер
-            var wrapper = document.createElement('div');
-            wrapper.className = 'qbit-wrapper';
-            
-            item.parentNode.insertBefore(wrapper, item);
-            wrapper.appendChild(actions);
-            wrapper.appendChild(item);
+            container.appendChild(actions);
         });
     }
 
@@ -695,24 +686,21 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Обертка: выстраивает кнопки и карточку в строку
-                    '.qbit-wrapper { display: flex; flex-direction: row; align-items: center; width: 100%; margin-bottom: 10px; }' +
+                    // Карточка: сдвигаем вправо, чтобы освободить место кнопкам
+                    '.torrent-item, .torrent-item__right { position: relative; overflow: visible !important; margin-left: 50px !important; }' +
                     
-                    // Контейнер кнопок: строго слева от карточки
-                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; width: 40px; flex-shrink: 0; margin-right: 10px; }' +
+                    // Контейнер кнопок: выносим влево за пределы карточки
+                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; position: absolute; left: -50px; top: 0; bottom: 0; z-index: 999; gap: 4px; }' +
                     
-                    // Карточка занимает все оставшееся место
-                    '.qbit-wrapper > .torrent-item, .qbit-wrapper > .torrent-item__right { flex: 1; min-width: 0; width: auto !important; margin: 0 !important; }' +
-                    
-                    // Компактные плоские кнопки
+                    // Плоские кнопки
                     '.qbit-direct-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 30px; height: 30px; background: none !important; border: none !important; border-radius: 0 !important; padding: 0; cursor: pointer; box-sizing: border-box; transition: transform 0.2s; }' +
                     '.qbit-direct-btn.focus { transform: scale(1.2); outline: none; }' +
                     
-                    // Иконки
+                    // Иконки и текст
                     '.qbit-direct-btn svg { width: 22px; height: 22px; fill: #27ae60; }' +
                     '.qbit-btn-text { font-size: 9px; font-weight: bold; margin-top: -4px; line-height: 1; color: #27ae60; }' +
                     
-                    // Разные цвета
+                    // Цвета
                     '.qbit-direct-player svg { fill: #3498db; }' +
                     '.qbit-direct-delete svg { fill: #e74c3c; }' +
                     
