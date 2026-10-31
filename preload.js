@@ -12,6 +12,8 @@
 // - Формирование SMB URI с сохранением вложенных каталогов
 // - Мастер первоначальной настройки
 // - Настройки сохраняются в Lampa.Storage
+// - Восстановление процента загрузки при повторном открытии карточки
+// - Надпись "Готово" на полностью скачанных торрентах
 // ============================================================================
 
 (function () {
@@ -174,8 +176,6 @@
                 storeGet('qbit_delete_files', false), false
             ),
 
-            // Новый параметр:
-            // SMB-корень уже содержит папку конкретного торрента.
             smb_torrent_folder: isTrue(
                 storeGet('qbit_smb_torrent_folder', false), false
             ),
@@ -221,12 +221,10 @@
 
         value = value.trim();
 
-        // SHA-1 infohash.
         if (/^[a-f0-9]{40}$/i.test(value)) {
             return value.toLowerCase();
         }
 
-        // BitTorrent v2 infohash.
         if (/^[a-f0-9]{64}$/i.test(value)) {
             return value.toLowerCase();
         }
@@ -953,6 +951,7 @@
                 typeof response !== 'string' ||
                 !response.length
             ) {
+                onProgress(null);
                 return;
             }
 
@@ -967,6 +966,9 @@
                     onProgress(
                         Number(torrents[0].progress) || 0
                     );
+                } else {
+                    // Торрент ещё не появился в qBittorrent.
+                    onProgress(null);
                 }
 
             } catch (error) {
@@ -974,12 +976,14 @@
                     '[qBittorrent] progress parse error:',
                     error
                 );
+
+                onProgress(null);
             }
         });
     }
 
     // ========================================================================
-    // SMB — ИСПРАВЛЕННАЯ ОБРАБОТКА ВЛОЖЕННЫХ ПАПОК
+    // SMB — ОБРАБОТКА ВЛОЖЕННЫХ ПАПОК
     // ========================================================================
 
     function encodeSmbPath(path) {
@@ -1032,66 +1036,131 @@
         return path.replace(/^\/+/, '');
     }
 
-    // Главная исправленная функция.
-    //
-    // qBittorrent может создавать:
-    //
-    // /torrents/Название торрента/film.mkv
-    //
-    // или:
-    //
-    // /torrents/Название торрента/BDMV/movie.mkv
-    //
-    // Имя дополнительной папки сохраняется.
-    //
-    // Удаляется оно только тогда, когда включён
-    // параметр qbit_smb_torrent_folder.
+    function cleanFsPath(path) {
+        return String(path || '')
+            .replace(/\\/g, '/')
+            .replace(/\/+/g, '/')
+            .replace(/\/+$/, '');
+    }
 
-    function makeSmbUri(fileName, torrentName) {
+    function relativeFsPath(basePath, path) {
+        basePath = cleanFsPath(basePath);
+        path = cleanFsPath(path);
+
+        if (!path) return '';
+
+        if (!basePath) {
+            return path.replace(/^\/+/, '');
+        }
+
+        if (path === basePath) return '';
+
+        if (path.indexOf(basePath + '/') === 0) {
+            return path.substring(basePath.length + 1);
+        }
+
+        return '';
+    }
+
+    function makeSmbUri(fileName, torrent) {
         var config = cfg();
+        torrent = torrent || {};
 
         var smbRoot = String(config.smb_file || '')
             .trim()
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
-        var relative = String(fileName || '')
-            .replace(/\\/g, '/');
+        var file = cleanFsPath(fileName).replace(/^\/+/, '');
+        var configuredSave = cleanFsPath(config.savepath);
+        var torrentSave = cleanFsPath(
+            torrent.save_path || configuredSave
+        );
+        var contentPath = cleanFsPath(torrent.content_path || '');
 
-        // Убираем локальный корень загрузок, если он присутствует.
-        relative = stripLocalRoots(relative, config);
+        var relativeBase = relativeFsPath(
+            configuredSave,
+            torrentSave
+        );
 
-        // Убираем имя торрента ТОЛЬКО по настройке.
-        if (config.smb_torrent_folder && torrentName) {
-            var folder = String(torrentName)
-                .replace(/\\/g, '/')
-                .replace(/\/+$/, '');
+        var contentRelative = '';
 
-            if (
-                folder &&
-                relative.indexOf(folder + '/') === 0
-            ) {
-                relative = relative.substring(
-                    folder.length + 1
+        if (contentPath && torrentSave) {
+            var contentLeaf = contentPath.split('/').pop();
+            var fileLeaf = file.split('/').pop();
+
+            var contentIsSingleFile = contentLeaf === fileLeaf;
+
+            if (!contentIsSingleFile) {
+                contentRelative = relativeFsPath(
+                    torrentSave,
+                    contentPath
                 );
             }
         }
 
-        var encoded = encodeSmbPath(relative);
+        if (/^(?:[A-Za-z]:\/|\/)/.test(file)) {
+            var absoluteRelative = relativeFsPath(
+                configuredSave,
+                file
+            );
+
+            if (!absoluteRelative) {
+                absoluteRelative = relativeFsPath(
+                    torrentSave,
+                    file
+                );
+
+                if (absoluteRelative) {
+                    absoluteRelative = [
+                        relativeBase,
+                        absoluteRelative
+                    ].filter(Boolean).join('/');
+                }
+            }
+
+            if (absoluteRelative) {
+                file = absoluteRelative;
+            } else {
+                file = stripLocalRoots(file, config);
+            }
+
+            relativeBase = '';
+            contentRelative = '';
+        } else {
+            if (
+                contentRelative &&
+                file.indexOf(contentRelative + '/') !== 0 &&
+                file !== contentRelative
+            ) {
+                file = contentRelative + '/' + file;
+            }
+
+            if (
+                relativeBase &&
+                file.indexOf(relativeBase + '/') !== 0 &&
+                file !== relativeBase
+            ) {
+                file = relativeBase + '/' + file;
+            }
+        }
+
+        file = cleanFsPath(file).replace(/^\/+/, '');
 
         var result = smbRoot +
-            (encoded ? '/' + encoded : '');
+            (file ? '/' + encodeSmbPath(file) : '');
 
         log('SMB root:', smbRoot);
-        log('Torrent name:', torrentName);
-        log('File name:', fileName);
-        log('Relative path:', relative);
-        log('Final SMB URI:', result);
+        log('Torrent:', torrent.name || '');
+        log('Save path:', torrentSave);
+        log('Content path:', contentPath);
+        log('File from API:', fileName);
+        log('SMB relative path:', file);
+        log('SMB URI:', result);
 
         return result;
     }
-
-    // ========================================================================
+        // ========================================================================
     // ЗАПУСК ВИДЕО В LAMPA
     // ========================================================================
 
@@ -1337,7 +1406,7 @@
 
                 var smbUri = makeSmbUri(
                     selectedFile.name,
-                    torrent.name
+                    torrent
                 );
 
                 log('Выбран файл:', selectedFile.name);
@@ -1395,6 +1464,198 @@
             element.addEventListener('hover:enter', wrapped);
             element.addEventListener('click', wrapped);
         }
+    }
+
+    // ========================================================================
+    // ПРОГРЕСС НА КНОПКЕ — УТИЛИТЫ
+    // ========================================================================
+
+    // Применяет состояние прогресса к кнопке добавления.
+    //
+    // progress === null  -> торрент ещё не известен qBittorrent,
+    //                       кнопка остаётся в режиме "qB" (готов к добавлению).
+    // progress < 1       -> режим загрузки, показываем проценты.
+    // progress >= 1      -> надпись "Готово", кнопка неактивна.
+    //
+    // Иконка (svg) передаётся отдельно, чтобы её можно было восстановить
+    // при повторном рендере карточки.
+
+    function applyProgressToButton(button, progress, iconSvg) {
+        if (!button) return;
+
+        var span = button.querySelector('.qbit-btn-text');
+
+        if (!span) {
+            span = document.createElement('span');
+            span.className = 'qbit-btn-text';
+            button.appendChild(span);
+        }
+
+        if (progress === null || progress === undefined) {
+            // Торрент не найден в qBittorrent — режим "добавить".
+            button.classList.remove('qbit-loading');
+            button.classList.remove('qbit-done');
+            button.dataset.qbitPolling = '0';
+
+            // Восстанавливаем иконку и текст "qB".
+            button.innerHTML = iconSvg +
+                '<span class="qbit-btn-text">qB</span>';
+
+            return;
+        }
+
+        if (progress >= 1) {
+            // Полностью скачан — надпись "Готово".
+            button.classList.remove('qbit-loading');
+            button.classList.add('qbit-done');
+            button.dataset.qbitPolling = '0';
+
+            button.innerHTML = iconSvg +
+                '<span class="qbit-btn-text">Готово</span>';
+
+            return;
+        }
+
+        // Идёт загрузка — режим процентов.
+        button.classList.add('qbit-loading');
+        button.classList.remove('qbit-done');
+
+        var percent = Math.floor(progress * 100);
+
+        if (percent < 0) percent = 0;
+        if (percent > 99) percent = 99;
+
+        // Пересохраняем иконку, чтобы при повторном рендере её можно было
+        // использовать в applyProgressToButton.
+        button.innerHTML = iconSvg +
+            '<span class="qbit-btn-text">' + percent + '%</span>';
+    }
+
+    // Запускает polling прогресса для кнопки, если он ещё не запущен.
+    // Используется и после добавления, и при восстановлении при рендере.
+
+    function startProgressPolling(
+        button,
+        hash,
+        item,
+        iconSvg
+    ) {
+        if (!button || !hash) return;
+
+        // Не плодим таймеры при повторных рендерах карточки.
+        if (button.dataset.qbitPolling === '1') {
+            return;
+        }
+
+        button.dataset.qbitPolling = '1';
+
+        var pollTimer = setInterval(function () {
+            try {
+                if (!document.body.contains(item)) {
+                    clearInterval(pollTimer);
+                    button.dataset.qbitPolling = '0';
+                    return;
+                }
+
+                checkTorrentProgress(hash, function (progress) {
+                    if (progress === null) {
+                        // Торрент пропал из qBittorrent — сбрасываем в "qB".
+                        clearInterval(pollTimer);
+                        button.dataset.qbitPolling = '0';
+                        applyProgressToButton(
+                            button,
+                            null,
+                            iconSvg
+                        );
+                        return;
+                    }
+
+                    if (progress >= 1) {
+                        clearInterval(pollTimer);
+                        button.dataset.qbitPolling = '0';
+
+                        applyProgressToButton(
+                            button,
+                            1,
+                            iconSvg
+                        );
+
+                        notify('Загрузка завершена!');
+                    } else {
+                        applyProgressToButton(
+                            button,
+                            progress,
+                            iconSvg
+                        );
+                    }
+                });
+
+            } catch (error) {
+                clearInterval(pollTimer);
+                button.dataset.qbitPolling = '0';
+
+                console.error(
+                    '[qBittorrent] poll error:',
+                    error
+                );
+            }
+        }, POLL_INTERVAL);
+    }
+
+    // Восстанавливает состояние кнопки добавления при повторном
+    // открытии карточки торрента.
+    //
+    // 1. Если торрент уже есть в qBittorrent:
+    //    - progress >= 1  -> "Готово";
+    //    - 0 < progress <1 -> проценты + polling.
+    // 2. Если торрента нет — кнопка остаётся в режиме "qB".
+
+    function restoreTorrentState(
+        button,
+        hash,
+        item,
+        iconSvg
+    ) {
+        if (!button || !hash) return;
+
+        // Помечаем, что кнопка в режиме восстановления,
+        // чтобы не запустить polling раньше времени.
+        button.dataset.qbitPolling = '0';
+
+        checkTorrentProgress(hash, function (progress) {
+            if (progress === null) {
+                // Торрент ещё не добавлен — кнопка в "qB".
+                applyProgressToButton(
+                    button,
+                    null,
+                    iconSvg
+                );
+                return;
+            }
+
+            if (progress >= 1) {
+                applyProgressToButton(
+                    button,
+                    1,
+                    iconSvg
+                );
+                return;
+            }
+
+            // Идёт загрузка — показываем проценты и запускаем polling.
+            applyProgressToButton(
+                button,
+                progress,
+                iconSvg
+            );
+
+            startProgressPolling(
+                button,
+                hash,
+                item,
+                iconSvg
+            );
+        });
     }
 
     // ================= РЕГИСТРАЦИЯ НАСТРОЕК =================
@@ -1512,7 +1773,6 @@
                     'Пример: ' + EXAMPLE_SMB_FILE
                 ],
 
-                // НОВАЯ НАСТРОЙКА.
                 [
                     'qbit_smb_torrent_folder',
                     'trigger',
@@ -1757,72 +2017,52 @@
                             return;
                         }
 
-                        addButton.innerHTML =
-                            downloadIcon +
-                            '<span class="qbit-btn-text">0%</span>';
+                        // Защита от повторного нажатия, пока идёт добавление.
+                        if (addButton.dataset.qbitAdding === '1') {
+                            return;
+                        }
 
-                        addButton.classList.add('qbit-loading');
+                        addButton.dataset.qbitAdding = '1';
+
+                        // Сразу переводим в состояние "0%".
+                        applyProgressToButton(
+                            addButton,
+                            0,
+                            downloadIcon
+                        );
 
                         qbAdd(magnet, title, function () {
+                            addButton.dataset.qbitAdding = '0';
+
                             if (!hash) {
                                 notify(
                                     'Торрент добавлен, но хеш не определён'
                                 );
-
                                 return;
                             }
 
-                            var pollTimer = setInterval(function () {
-                                try {
-                                    if (
-                                        !document.body.contains(item)
-                                    ) {
-                                        clearInterval(pollTimer);
-                                        return;
-                                    }
-
-                                    checkTorrentProgress(
-                                        hash,
-                                        function (progress) {
-                                            if (progress >= 1) {
-                                                clearInterval(pollTimer);
-
-                                                addButton.style.display =
-                                                    'none';
-
-                                                notify(
-                                                    'Загрузка завершена!'
-                                                );
-
-                                            } else {
-                                                var span =
-                                                    addButton.querySelector(
-                                                        '.qbit-btn-text'
-                                                    );
-
-                                                if (span) {
-                                                    span.textContent =
-                                                        Math.floor(
-                                                            progress * 100
-                                                        ) + '%';
-                                                }
-                                            }
-                                        }
-                                    );
-
-                                } catch (error) {
-                                    clearInterval(pollTimer);
-
-                                    console.error(
-                                        '[qBittorrent] poll error:',
-                                        error
-                                    );
-                                }
-                            }, POLL_INTERVAL);
+                            // Запускаем polling через общий хелпер.
+                            startProgressPolling(
+                                addButton,
+                                hash,
+                                item,
+                                downloadIcon
+                            );
                         });
                     },
                     downloadIcon
                 );
+
+                // Восстанавливаем состояние при повторном рендере карточки:
+                // "Готово" / проценты / "qB".
+                if (hash) {
+                    restoreTorrentState(
+                        addButton,
+                        hash,
+                        item,
+                        downloadIcon
+                    );
+                }
 
                 actions.appendChild(addButton);
                 actions.appendChild(playerButton);
@@ -1916,6 +2156,16 @@
             '.qbit-loading {' +
                 'opacity:0.7;' +
                 'pointer-events:none;' +
+            '}' +
+
+            '.qbit-done {' +
+                'pointer-events:none;' +
+                'opacity:1;' +
+            '}' +
+
+            '.qbit-done .qbit-btn-text {' +
+                'font-size:9px;' +
+                'color:#27ae60;' +
             '}' +
 
             '.qbit-empty-value {' +
