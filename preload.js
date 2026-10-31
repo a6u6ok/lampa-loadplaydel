@@ -332,6 +332,64 @@
             false;
     }
 
+    // Извлекает номер сезона и серии из типичных имён:
+    // Show.S02E01, Show.2x01, Season 2/Episode 01.
+    function getEpisodeOrder(filename) {
+        var value = String(filename || '').replace(/\\/g, '/');
+        var match = /(?:^|[^a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:[^0-9]|$)/i.exec(value);
+
+        if (!match) {
+            match = /(?:^|[^0-9])(\d{1,2})x(\d{1,3})(?:[^0-9]|$)/i.exec(value);
+        }
+
+        if (match) {
+            return {
+                season: parseInt(match[1], 10),
+                episode: parseInt(match[2], 10),
+                known: true
+            };
+        }
+
+        // Поддержка структуры каталогов Season 2/Episode 01.
+        var seasonMatch = /season[ ._-]*(\d{1,2})/i.exec(value);
+        var episodeMatch = /episode[ ._-]*(\d{1,3})/i.exec(value);
+        if (seasonMatch && episodeMatch) {
+            return {
+                season: parseInt(seasonMatch[1], 10),
+                episode: parseInt(episodeMatch[1], 10),
+                known: true
+            };
+        }
+
+        return { season: 0, episode: 0, known: false };
+    }
+
+    function compareEpisodeFiles(a, b) {
+        var orderA = getEpisodeOrder(a.name);
+        var orderB = getEpisodeOrder(b.name);
+
+        // Если номера распознаны у обоих файлов — сортируем по сезону и серии.
+        if (orderA.known && orderB.known) {
+            if (orderA.season !== orderB.season) {
+                return orderA.season - orderB.season;
+            }
+            if (orderA.episode !== orderB.episode) {
+                return orderA.episode - orderB.episode;
+            }
+        } else if (orderA.known !== orderB.known) {
+            // Файлы с явным номером серии ставим перед неопознанными видео.
+            return orderA.known ? -1 : 1;
+        }
+
+        // Резервная естественная сортировка по имени, не по размеру файла.
+        var nameA = String(a.name || '').toLowerCase();
+        var nameB = String(b.name || '').toLowerCase();
+        return nameA.localeCompare(nameB, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+        });
+    }
+
     function formatSize(bytes) {
         bytes = Number(bytes) || 0;
 
@@ -940,7 +998,6 @@
                 'title',
                 'Торрент загружен полностью'
             );
-
             log('Статус торрента: Загружено');
 
         } else {
@@ -1438,11 +1495,13 @@
                     return;
                 }
 
-                videoFiles.sort(function (a, b) {
-                    return Number(b.size) - Number(a.size);
-                });
+                // Не выбираем самый большой файл: это могло запускать 2-ю,
+                // 3-ю или другую серию. Сначала выбираем первую серию по SxxEyy.
+                videoFiles.sort(compareEpisodeFiles);
 
                 var selectedFile = videoFiles[0];
+                log('Всего готовых видеофайлов:', videoFiles.length);
+                log('Выбрана первая серия по порядку:', selectedFile.name);
 
                 var fileTitle = String(selectedFile.name)
                     .replace(/\\/g, '/')
