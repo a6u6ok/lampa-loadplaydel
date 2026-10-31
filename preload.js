@@ -600,8 +600,11 @@
 
             if (!item) return;
 
+            // Проверяем, не обернута ли карточка уже
+            if (item.parentNode && item.parentNode.classList.contains('qbit-wrapper')) return;
+
+            // Ищем контейнер, в который вложена карточка (обычно это div)
             var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
-            
             if (container.querySelector('.qbit-direct-actions')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
@@ -669,7 +672,13 @@
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
-            container.appendChild(actions);
+            // Оборачиваем карточку в новый Flex-контейнер
+            var wrapper = document.createElement('div');
+            wrapper.className = 'qbit-wrapper';
+            
+            item.parentNode.insertBefore(wrapper, item);
+            wrapper.appendChild(actions);
+            wrapper.appendChild(item);
         });
     }
 
@@ -686,25 +695,28 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Карточка должна вмещать отступ слева и не обрезать контент
-                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important; padding-left: 45px !important; box-sizing: border-box !important;}' +
+                    // Обертка: выстраивает кнопки и карточку в строку
+                    '.qbit-wrapper { display: flex; flex-direction: row; align-items: center; width: 100%; margin-bottom: 10px; }' +
                     
-                    // Контейнер кнопок выровнен по левому краю
-                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;left:5px;top:0;bottom:0;z-index:999;gap:4px;}' +
+                    // Контейнер кнопок: строго слева от карточки
+                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; width: 40px; flex-shrink: 0; margin-right: 10px; }' +
+                    
+                    // Карточка занимает все оставшееся место
+                    '.qbit-wrapper > .torrent-item, .qbit-wrapper > .torrent-item__right { flex: 1; min-width: 0; width: auto !important; margin: 0 !important; }' +
                     
                     // Компактные плоские кнопки
-                    '.qbit-direct-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;width:30px;height:30px;background:none !important;border:none !important;border-radius:0 !important;padding:0;cursor:pointer;box-sizing:border-box;transition:transform 0.2s;}' +
-                    '.qbit-direct-btn.focus{transform:scale(1.2);outline:none;}' +
+                    '.qbit-direct-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 30px; height: 30px; background: none !important; border: none !important; border-radius: 0 !important; padding: 0; cursor: pointer; box-sizing: border-box; transition: transform 0.2s; }' +
+                    '.qbit-direct-btn.focus { transform: scale(1.2); outline: none; }' +
                     
                     // Иконки
-                    '.qbit-direct-btn svg{width:22px;height:22px;fill:#27ae60;}' +
-                    '.qbit-btn-text{font-size:9px;font-weight:bold;margin-top:-4px;line-height:1;color:#27ae60;}' +
+                    '.qbit-direct-btn svg { width: 22px; height: 22px; fill: #27ae60; }' +
+                    '.qbit-btn-text { font-size: 9px; font-weight: bold; margin-top: -4px; line-height: 1; color: #27ae60; }' +
                     
                     // Разные цвета
                     '.qbit-direct-player svg { fill: #3498db; }' +
                     '.qbit-direct-delete svg { fill: #e74c3c; }' +
                     
-                    '.qbit-loading{opacity:0.7;pointer-events:none;}';
+                    '.qbit-loading { opacity: 0.7; pointer-events: none; }';
                 document.head.appendChild(style);
             }
             console.log('[qBittorrent] Плагин загружен');
