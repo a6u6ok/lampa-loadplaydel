@@ -595,7 +595,12 @@
             var item = event.item.jquery ? event.item[0] : event.item;
             var data = event.element || {};
 
-            if (!item || item.querySelector('.qbit-direct-actions')) return;
+            if (!item) return;
+
+            // Ищем внутренний контейнер раздачи, чтобы избежать наложения
+            var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
+            
+            if (container.querySelector('.qbit-direct-actions')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
             var title = data.Title || data.title || '';
@@ -612,14 +617,14 @@
             var playIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
             var deleteIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
 
-            // Кнопка добавления "qB"
+            // Кнопка добавления
             var addButton = createButton('qbit-direct-add', 'qB', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
                     return;
                 }
 
-                addButton.innerHTML = downloadIcon + '<span>⏳ 0%</span>';
+                addButton.innerHTML = downloadIcon + '<span>0%</span>';
                 addButton.classList.add('qbit-loading');
                 
                 qbAdd(magnet, title, function() {
@@ -640,7 +645,7 @@
                                 notify('Загрузка завершена!');
                             } else {
                                 var span = addButton.querySelector('span');
-                                if (span) span.textContent = '⏳ ' + Math.floor(progress * 100) + '%';
+                                if (span) span.textContent = Math.floor(progress * 100) + '%';
                             }
                         });
                     }, POLL_INTERVAL);
@@ -666,7 +671,7 @@
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
-            item.appendChild(actions);
+            container.appendChild(actions);
         });
     }
 
@@ -683,17 +688,20 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Контейнер для кнопок: прижимаем к правому краю по центру вертикали
-                    '.qbit-direct-actions{display:flex;flex-direction:column;align-items:center;justify-content:center;position:absolute;right:20px;top:50%;transform:translateY(-50%);z-index:999;gap:8px;}' +
+                    // Привязываем контейнер к карточке
+                    '.torrent-item, .torrent-item__right {position: relative; padding-right: 70px !important;}' +
                     
-                    // Общий стиль кнопки (квадратная, зеленая как на скриншоте)
-                    '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:64px;height:64px;background:#27ae60;color:white;border:2px solid transparent;border-radius:12px;font-size:14px;font-weight:bold;white-space:nowrap;cursor:pointer;transition:all 0.2s;box-sizing:border-box;}' +
+                    // Контейнер с кнопками
+                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:10px;top:0;bottom:0;z-index:10;gap:6px;}' +
+                    
+                    // Компактные кнопки
+                    '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:46px;height:46px;background:#27ae60;color:white;border:2px solid transparent;border-radius:8px;font-size:10px;font-weight:bold;white-space:nowrap;cursor:pointer;transition:all 0.2s;box-sizing:border-box;}' +
                     '.qbit-direct-btn.focus{border-color:white;background:#2ecc71;transform:scale(1.05);}' +
                     
                     // Иконки
-                    '.qbit-direct-btn svg{width:24px;height:24px;margin-bottom:2px;fill:white;}' +
+                    '.qbit-direct-btn svg{width:18px;height:18px;margin-bottom:1px;fill:white;}' +
                     
-                    // Стили для конкретных кнопок
+                    // Цвета кнопок
                     '.qbit-direct-player{background:#3498db;}' +
                     '.qbit-direct-player.focus{background:#5dade2;}' +
                     '.qbit-direct-delete{background:#e74c3c;}' +
