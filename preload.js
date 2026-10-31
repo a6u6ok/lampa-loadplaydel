@@ -546,15 +546,21 @@
 
     // ================= КНОПКИ В КАРТОЧКЕ И ПРОГРЕСС =================
 
+    // Теперь функция принимает только иконку и текст для внутреннего счетчика (если нужно)
     function createButton(className, text, handler, iconSvg) {
         var button = document.createElement('div');
         button.className = 'qbit-direct-btn ' + className + ' selector';
         button.tabIndex = 0;
         
-        if (iconSvg) {
-            button.innerHTML = iconSvg + '<span>' + text + '</span>';
-        } else {
-            button.textContent = text;
+        // Вставляем только иконку
+        button.innerHTML = iconSvg;
+        
+        // Если передан текст (например, "qB"), добавляем его мелким шрифтом под иконкой (для кнопки добавления)
+        if (text) {
+            var textSpan = document.createElement('span');
+            textSpan.textContent = text;
+            textSpan.className = 'qbit-btn-text';
+            button.appendChild(textSpan);
         }
         
         bindPress(button, handler);
@@ -597,7 +603,6 @@
 
             if (!item) return;
 
-            // Ищем внутренний контейнер раздачи, чтобы избежать наложения
             var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
             
             if (container.querySelector('.qbit-direct-actions')) return;
@@ -617,14 +622,15 @@
             var playIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
             var deleteIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
 
-            // Кнопка добавления
+            // Кнопка добавления (с иконкой и текстом "qB" внутри)
             var addButton = createButton('qbit-direct-add', 'qB', function () {
                 if (alwaysShow) {
                     qbAdd(magnet, title);
                     return;
                 }
 
-                addButton.innerHTML = downloadIcon + '<span>0%</span>';
+                // При загрузке убираем "qB" и пишем проценты
+                addButton.innerHTML = downloadIcon + '<span class="qbit-btn-text">0%</span>';
                 addButton.classList.add('qbit-loading');
                 
                 qbAdd(magnet, title, function() {
@@ -644,7 +650,7 @@
                                 deleteButton.style.display = 'inline-flex';
                                 notify('Загрузка завершена!');
                             } else {
-                                var span = addButton.querySelector('span');
+                                var span = addButton.querySelector('.qbit-btn-text');
                                 if (span) span.textContent = Math.floor(progress * 100) + '%';
                             }
                         });
@@ -652,13 +658,13 @@
                 });
             }, downloadIcon);
 
-            // Кнопка плеера
-            var playerButton = createButton('qbit-direct-player', 'Плеер', function () {
+            // Кнопка плеера (только иконка)
+            var playerButton = createButton('qbit-direct-player', '', function () {
                 handlePlayerButton();
             }, playIcon);
 
-            // Кнопка удаления
-            var deleteButton = createButton('qbit-direct-delete', 'Удалить', function () {
+            // Кнопка удаления (только иконка)
+            var deleteButton = createButton('qbit-direct-delete', '', function () {
                 qbDelete(magnet);
             }, deleteIcon);
 
@@ -688,18 +694,21 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Привязываем контейнер к карточке
-                    '.torrent-item, .torrent-item__right {position: relative; padding-right: 70px !important;}' +
+                    // Разрешаем карточкам не обрезать контент, выходящий за их пределы
+                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important;}' +
                     
-                    // Контейнер с кнопками
-                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:10px;top:0;bottom:0;z-index:10;gap:6px;}' +
+                    // Выносим контейнер кнопок за пределы карточки (вправо на 60 пикселей)
+                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:-60px;top:0;bottom:0;z-index:999;gap:6px;}' +
                     
-                    // Компактные кнопки
-                    '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:46px;height:46px;background:#27ae60;color:white;border:2px solid transparent;border-radius:8px;font-size:10px;font-weight:bold;white-space:nowrap;cursor:pointer;transition:all 0.2s;box-sizing:border-box;}' +
-                    '.qbit-direct-btn.focus{border-color:white;background:#2ecc71;transform:scale(1.05);}' +
+                    // Круглые кнопки только с иконками
+                    '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:44px;background:#27ae60;color:white;border:2px solid transparent;border-radius:50%;cursor:pointer;transition:all 0.2s;box-sizing:border-box;}' +
+                    '.qbit-direct-btn.focus{border-color:white;background:#2ecc71;transform:scale(1.1);}' +
                     
                     // Иконки
-                    '.qbit-direct-btn svg{width:18px;height:18px;margin-bottom:1px;fill:white;}' +
+                    '.qbit-direct-btn svg{width:22px;height:22px;fill:white;}' +
+                    
+                    // Текст внутри кнопки (qB или проценты)
+                    '.qbit-btn-text{font-size:10px;font-weight:bold;margin-top:-2px;line-height:1;}' +
                     
                     // Цвета кнопок
                     '.qbit-direct-player{background:#3498db;}' +
