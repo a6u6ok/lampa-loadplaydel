@@ -600,8 +600,10 @@
 
             if (!item) return;
 
-            var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
+            // Находим карточку
+            var container = item.querySelector('.torrent-item') || item.querySelector('.torrent-item__right') || item;
             
+            // Предотвращаем дублирование
             if (container.querySelector('.qbit-direct-actions')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
@@ -640,8 +642,8 @@
                             if (progress >= 1) {
                                 clearInterval(pollTimer);
                                 addButton.style.display = 'none';
-                                playerButton.style.display = 'inline-flex';
-                                deleteButton.style.display = 'inline-flex';
+                                playerButton.style.display = 'flex';
+                                deleteButton.style.display = 'flex';
                                 notify('Загрузка завершена!');
                             } else {
                                 var span = addButton.querySelector('.qbit-btn-text');
@@ -669,7 +671,23 @@
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
-            container.appendChild(actions);
+            // Делаем карточку Flex-контейнером, кнопки ставим первыми (слева)
+            container.style.display = 'flex';
+            container.style.alignItems = 'center';
+            container.style.justifyContent = 'flex-start';
+            container.style.paddingLeft = '10px';
+            container.style.gap = '15px';
+
+            // Если внутри карточки есть обертка для текста, заставляем её занимать оставшееся место
+            var textWrapper = container.querySelector('.torrent-item__right') || container.querySelector('.torrent-item__title') || container;
+            if (textWrapper !== container) {
+                textWrapper.style.flex = '1';
+                textWrapper.style.minWidth = '0';
+            } else {
+                container.style.flexWrap = 'wrap';
+            }
+
+            container.insertBefore(actions, container.firstChild);
         });
     }
 
@@ -686,24 +704,20 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Сдвигаем карточку вправо, чтобы освободить место слева для кнопок.
-                    // Добавляем position: relative для абсолютного позиционирования.
-                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important; margin-left: 65px !important;}' +
+                    // Контейнер кнопок: вертикальный ряд, фиксированная ширина
+                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;flex-shrink:0;width:30px;}' +
                     
-                    // Выносим контейнер кнопок далеко влево, за пределы карточки
-                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;left:-60px;top:0;bottom:0;z-index:999;gap:8px;}' +
-                    
-                    // Плоские кнопки без фона, рамок и скруглений (просто цветные иконки)
-                    '.qbit-direct-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:44px;height:44px;background:transparent !important;border:none !important;border-radius:0 !important;cursor:pointer;transition:transform 0.2s;box-sizing:border-box;}' +
+                    // Кнопки: без фона, без рамок, компактный размер
+                    '.qbit-direct-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;width:30px;height:30px;background:none !important;border:none !important;border-radius:0 !important;padding:0;cursor:pointer;box-sizing:border-box;transition:transform 0.2s;}' +
                     '.qbit-direct-btn.focus{transform:scale(1.2);outline:none;}' +
                     
-                    // Иконки получают цвет через fill
-                    '.qbit-direct-btn svg{width:32px;height:32px;fill:#27ae60;}' +
-                    '.qbit-btn-text{font-size:10px;font-weight:bold;margin-top:-6px;line-height:1;color:#27ae60;}' +
+                    // Иконки масштабируются под размер кнопки
+                    '.qbit-direct-btn svg{width:22px;height:22px;fill:#27ae60;}' +
+                    '.qbit-btn-text{font-size:9px;font-weight:bold;margin-top:-2px;line-height:1;color:#27ae60;}' +
                     
-                    // Цвета для разных кнопок
-                    '.qbit-direct-player svg, .qbit-direct-player .qbit-btn-text {fill:#3498db;color:#3498db;}' +
-                    '.qbit-direct-delete svg, .qbit-direct-delete .qbit-btn-text {fill:#e74c3c;color:#e74c3c;}' +
+                    // Цвета иконок
+                    '.qbit-direct-player svg { fill: #3498db; }' +
+                    '.qbit-direct-delete svg { fill: #e74c3c; }' +
                     
                     '.qbit-loading{opacity:0.7;pointer-events:none;}';
                 document.head.appendChild(style);
