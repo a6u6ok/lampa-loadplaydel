@@ -1,7 +1,7 @@
 // ============================================================================
 // Плагин qBittorrent для Lampa (Keenetic + Entware + SMB).
 // На основе https://github.com/kostya4000/lampa-qbit. Доработан для запуска видео по SMB.
-// Настройки задаются через мастер при первом использовании и хранятся в Lampa.Storage. 
+// Настройки задаются через мастер при первом использовании и хранятся в Lampa.Storage.
 // ============================================================================
 
 (function () {
@@ -24,7 +24,7 @@
     });
 
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
-  
+
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
     var EXAMPLE_SAVEPATH = '/mnt/storage/torrents';
     var EXAMPLE_SMB_FILE = 'smb://192.168.1.1/MEDIA/';
@@ -117,11 +117,14 @@
             confirm: isTrue(storeGet('qbit_confirm', true), true),
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', true), true),
             delete_files: isTrue(storeGet('qbit_delete_files', false), false),
+            // Плеер не выбирается. Если он остался в хранилище со старой
+            // версии — используем его, иначе системный выбор плеера.
             player_package: storeGet('qbit_player_package', ''),
             smb_file: storeGet('qbit_smb_file', '')
         };
     }
 
+    // Проверяем, прошёл ли пользователь мастер настройки.
     function isConfigured() {
         var config = cfg();
         return !!(config.url && config.savepath && config.smb_file);
@@ -198,7 +201,7 @@
     }
 
     function isVideoFile(filename) {
-        var match = /\.([^.\/\]+)$/.exec(String(filename || '').toLowerCase());
+        var match = /\.([^.\/\\]+)$/.exec(String(filename || '').toLowerCase());
         return match ? VIDEO_EXTENSIONS.indexOf(match[1]) !== -1 : false;
     }
 
@@ -211,16 +214,24 @@
 
     // ================= «НЕ ЗАПОЛНЕНО» В НАСТРОЙКАХ =================
 
+    // Показываем серую надпись «Не заполнено» в полях настроек Lampa,
+    // пока значение в хранилище пустое. Само хранилище не трогаем:
+    // при редактировании поле открывается пустым, и случайная надпись
+    // не может сохраниться как значение.
     function syncSettingPlaceholders() {
         try {
+            // Пока открыт любой диалог/модалка — не трогаем DOM,
+            // чтобы не мешать вводу.
             if (document.querySelector('.modal, .modal__content')) return;
 
             SETTING_TEXT_FIELDS.forEach(function (name) {
                 var item = document.querySelector('[data-name="' + name + '"]');
+
                 if (!item) return;
 
                 var valueEl = item.querySelector('.value') ||
                     item.querySelector('.setting__value');
+
                 if (!valueEl) return;
 
                 var stored = String(storeGet(name, ''));
@@ -236,12 +247,15 @@
                 }
             });
         } catch (error) {
-            // Тихо
+            // Тихо: это только визуальная подсказка.
         }
     }
 
     // ================= МАСТЕР ПЕРВОЙ НАСТРОЙКИ =================
 
+    // Открывается при первом использовании, если основные поля пусты.
+    // Сохранённые значения живут в Lampa.Storage и НЕ сбрасываются
+    // при обновлении скрипта.
     function openSetupWizard(onDone) {
         if (!window.Lampa || !Lampa.Modal) {
             notify('Настройте плагин в разделе Настройки → qBittorrent');
@@ -308,9 +322,18 @@
                 var savepath = String(html.querySelector('#qbit-wz-savepath').value || '').trim();
                 var smb = String(html.querySelector('#qbit-wz-smb').value || '').trim();
 
-                if (!url) { notify('Укажите адрес qBittorrent'); return; }
-                if (!savepath) { notify('Укажите путь загрузок'); return; }
-                if (!smb) { notify('Укажите SMB-шару'); return; }
+                if (!url) {
+                    notify('Укажите адрес qBittorrent');
+                    return;
+                }
+                if (!savepath) {
+                    notify('Укажите путь загрузок');
+                    return;
+                }
+                if (!smb) {
+                    notify('Укажите SMB-шару');
+                    return;
+                }
 
                 storeSet('qbit_url', url);
                 storeSet('qbit_savepath', savepath);
@@ -326,8 +349,10 @@
         }
     }
 
+    // Если плагин не настроен — открываем мастер и не выполняем действие.
     function requireSetup(onDone) {
         if (isConfigured()) return true;
+
         debugNotify('Требуется первая настройка');
         openSetupWizard(onDone);
         return false;
@@ -373,6 +398,9 @@
             });
     }
 
+    // AndroidJS bridge:
+    // AndroidJS.httpReq(JSON.stringify({url, timeout, headers, post_data}), requestId)
+    // AndroidJS.getResp(String(requestId))
     function nativeRequest(request, callback) {
         var responded = false;
         var requestId = ++nativeRequestId;
@@ -462,6 +490,7 @@
 
     function doLogin(done) {
         var config = cfg();
+
         if (config.bypass || !config.user) {
             done(true);
             return;
@@ -474,6 +503,7 @@
                 '&password=' + encodeURIComponent(config.pass),
             headers: CT_FORM
         }, function (response) {
+            // При успехе qBittorrent возвращает "Ok." и ставит куку SID.
             if (!response || /Forbidden|403|Fails/i.test(response)) {
                 console.error('[qBittorrent] Authentication failed');
                 notify('Ошибка авторизации qBittorrent');
@@ -481,6 +511,7 @@
                 return;
             }
 
+            // Пытаемся вытащить SID из ответа (если мост отдал заголовки).
             try {
                 var obj = typeof response === 'string' ? null : response;
                 if (obj && obj.headers) {
@@ -496,6 +527,7 @@
 
     function qbRequest(request, callback) {
         var config = cfg();
+
         if (config.bypass || !config.user) {
             nativeRequest(request, callback);
             return;
@@ -553,6 +585,7 @@
         }
 
         var body = buildAddBody(magnet, title);
+
         debugNotify('Отправляю в qBittorrent...');
 
         qbRequest({
@@ -565,17 +598,21 @@
                 notify('Нет связи с qBittorrent');
                 return;
             }
+
             if (/Forbidden|403|Fails/i.test(response)) {
                 notify('Ошибка добавления торрента');
                 return;
             }
+
             notify('Отправлено в qBittorrent');
             if (onComplete) onComplete();
         });
     }
 
     function qbDelete(hashOrMagnet) {
+        // Принимаем и magnet, и готовый хеш — отправляем всегда чистый хеш.
         var hash = magnetHash(hashOrMagnet);
+
         if (!hash) {
             notify('Не удалось определить хеш торрента');
             return;
@@ -631,18 +668,20 @@
 
     function encodeSmbPath(path) {
         return String(path || '')
-            .replace(/\/g, '/')
+            .replace(/\\/g, '/')
             .split('/')
             .filter(function (part) { return part !== ''; })
             .map(function (part) { return encodeURIComponent(part); })
             .join('/');
     }
 
+    // Убираем локальные корни из абсолютного пути файла.
     function stripLocalRoots(absolutePath, config) {
-        var path = String(absolutePath || '').replace(/\/g, '/');
+        var path = String(absolutePath || '').replace(/\\/g, '/');
+
         var roots = [];
 
-        var savePath = String(config.savepath || '').replace(/\/g, '/').replace(/\/+$/, '');
+        var savePath = String(config.savepath || '').replace(/\\/g, '/').replace(/\/+$/, '');
         if (savePath) {
             roots.push(savePath);
             if (config.category) {
@@ -650,6 +689,7 @@
             }
         }
 
+        // Перебираем корни от самого длинного к короткому.
         roots.sort(function (a, b) { return b.length - a.length; });
 
         for (var i = 0; i < roots.length; i++) {
@@ -662,50 +702,89 @@
         return path;
     }
 
-    // Улучшенная функция сборки SMB-ссылки с поддержкой вложенных папок
+    // Собираем SMB-ссылку из пути файла.
     function makeSmbUri(fileName, torrentName) {
         var config = cfg();
-        var smbRoot = String(config.smb_file || '').trim().replace(/\/g, '/').replace(/\/+$/, '');
 
-        // Нормализуем относительный путь файла внутри торрента, пришедший от qB
-        var relative = String(fileName || '').replace(/\/g, '/');
+        var smbRoot = String(config.smb_file || '')
+            .trim()
+            .replace(/\\/g, '/')
+            .replace(/\/+$/, '');
 
-        // Отрезаем абсолютные корни роутера, если qBittorrent вернул полный системный путь
+        var relative = String(fileName || '').replace(/\\/g, '/');
+
+        // 1) Пробуем отрезать абсолютные корни (savepath, savepath/категория).
         var stripped = stripLocalRoots(relative, config);
 
-        // Интеллектуальное сопоставление вложенных папок:
-        // Если корень SMB-шары НЕ содержит в себе имя торрента, а путь файла СНОВА начинается с имени торрента,
-        // мы должны убедиться, что не задублируем его, либо не срежем важную вложенную подпапку.
+        // 2) Если остался ведущий сегмент = имя торрента и SMB-корень уже
+        //    указывает на папку торрента — отрезаем его.
         if (torrentName) {
-            var torrentNameNorm = String(torrentName).replace(/\/g, '/').replace(/\/+$/, '');
-            var smbRootNorm = smbRoot.toLowerCase();
-            var torrentNameLower = torrentNameNorm.toLowerCase();
-
-            // Если в конце корня шары уже приписано имя торрента, убираем его из относительного пути видео
-            if (smbRootNorm.endsWith('/' + torrentNameLower) || smbRootNorm === torrentNameLower) {
-                if (stripped.toLowerCase().indexOf(torrentNameLower + '/') === 0) {
-                    stripped = stripped.substring(torrentNameNorm.length + 1);
-                }
-            } else {
-                // Если шара ведет на общий корень (например /MEDIA/), а в пути файла нет папки торрента,
-                // автоматически подставляем имя торрента как корневую папку раздачи
-                if (stripped.toLowerCase().indexOf(torrentNameLower + '/') !== 0 && stripped.toLowerCase() !== torrentNameLower) {
-                    stripped = torrentNameNorm + '/' + stripped;
-                }
+            var torrentNameNorm = String(torrentName).replace(/\\/g, '/').replace(/\/+$/, '');
+            if (torrentNameNorm &&
+                stripped.indexOf(torrentNameNorm + '/') === 0) {
+                stripped = stripped.substring(torrentNameNorm.length + 1);
             }
         }
 
         var result = smbRoot + '/' + encodeSmbPath(stripped);
 
         log('SMB root:', smbRoot);
-        log('Relative file path:', stripped);
-        log('Final SMB URI:', result);
+        log('Relative path:', stripped);
+        log('SMB URI:', result);
 
         return result;
     }
 
+    // ================= ПОИСК ВИДЕО ВО ВЛОЖЕННЫХ ПАПКАХ =================
+
+    // Выбираем видеофайл: сначала пробуем найти видео в корне торрента
+    // (без вложенных папок), если нет — ищем самое большое видео
+    // среди всех полностью скачанных файлов, включая вложенные папки.
+    function pickVideoFile(files, torrentName) {
+        var torrentNameNorm = String(torrentName || '')
+            .replace(/\\/g, '/')
+            .replace(/\/+$/, '');
+
+        function relativeName(name) {
+            var normalized = String(name || '').replace(/\\/g, '/');
+            if (torrentNameNorm && normalized.indexOf(torrentNameNorm + '/') === 0) {
+                return normalized.substring(torrentNameNorm.length + 1);
+            }
+            return normalized;
+        }
+
+        function isRootFile(name) {
+            var rel = relativeName(name);
+            return rel.indexOf('/') === -1;
+        }
+
+        // Только полностью скачанные видео.
+        var videoFiles = files.filter(function (file) {
+            return isVideoFile(file.name) &&
+                Number(file.progress) >= 0.999999;
+        });
+
+        if (!videoFiles.length) return null;
+
+        // 1) Видео в корне торрента.
+        var rootVideos = videoFiles.filter(function (file) {
+            return isRootFile(file.name);
+        });
+
+        var pool = rootVideos.length ? rootVideos : videoFiles;
+
+        // 2) Самое большое видео первым.
+        pool.sort(function (a, b) {
+            return Number(b.size) - Number(a.size);
+        });
+
+        return pool[0];
+    }
+
     // ================= ОТКРЫТИЕ ФАЙЛА В ПЛЕЕРЕ =================
 
+    // Выбор плеера не задаётся в плагине. Если пакет не указан —
+    // Android сам предложит список установленных плееров (system chooser).
     function openFileInPlayer(fileUri, playerPkg, title) {
         var uri = String(fileUri || '').trim();
         var pkg = String(playerPkg || '').trim();
@@ -718,8 +797,11 @@
         debugNotify('Открываю: ' + (title || uri));
         log('Запуск плеера:', pkg || '(системный выбор)', uri);
 
+        // 1. Lampa Android bridge.
         try {
-            if (window.Lampa && Lampa.Android && typeof Lampa.Android.openPlayer === 'function') {
+            if (window.Lampa && Lampa.Android &&
+                typeof Lampa.Android.openPlayer === 'function') {
+
                 if (pkg) {
                     Lampa.Android.openPlayer(uri, { package: pkg, title: title || '' });
                 } else {
@@ -731,6 +813,7 @@
             console.error('[qBittorrent] Lampa.Android error:', error);
         }
 
+        // 2. Прямой вызов AndroidJS.
         try {
             if (window.AndroidJS && typeof window.AndroidJS.openPlayer === 'function') {
                 window.AndroidJS.openPlayer(uri, pkg, title || '', 'video/*');
@@ -740,10 +823,16 @@
             console.error('[qBittorrent] AndroidJS error:', error);
         }
 
+        // 3. Intent через AndroidJS (без package — системный выбор плеера).
         try {
             if (window.AndroidJS && typeof window.AndroidJS.startActivity === 'function') {
-                var intent = { action: 'android.intent.action.VIEW', data: uri, type: 'video/*' };
+                var intent = {
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: 'video/*'
+                };
                 if (pkg) intent.package = pkg;
+
                 window.AndroidJS.startActivity(JSON.stringify(intent));
                 return;
             }
@@ -770,6 +859,7 @@
             method: 'GET',
             headers: authHeaders()
         }, function (infoResponse) {
+
             log('Ответ torrents/info:', infoResponse);
 
             if (!infoResponse) {
@@ -804,6 +894,7 @@
                 method: 'GET',
                 headers: authHeaders()
             }, function (filesResponse) {
+
                 log('Ответ torrents/files:', filesResponse);
 
                 if (!filesResponse) {
@@ -825,23 +916,17 @@
                     return;
                 }
 
-                // Сканируем все файлы раздачи, включая вложенные папки
-                var videoFiles = files.filter(function (file) {
-                    return isVideoFile(file.name) && Number(file.progress) >= 0.999999;
-                });
+                var selectedFile = pickVideoFile(files, torrent.name);
 
-                if (!videoFiles.length) {
+                if (!selectedFile) {
                     notify('Нет полностью скачанных видеофайлов');
                     return;
                 }
 
-                // Сортируем: самое большое видео будет первым (основной фильм/серия)
-                videoFiles.sort(function (a, b) {
-                    return Number(b.size) - Number(a.size);
-                });
-
-                var selectedFile = videoFiles[0];
-                var fileTitle = String(selectedFile.name).replace(/\/g, '/').split('/').pop();
+                var fileTitle = String(selectedFile.name)
+                    .replace(/\\/g, '/')
+                    .split('/')
+                    .pop();
 
                 if (!String(cfg().smb_file || '').trim()) {
                     notify('Не настроена SMB-шара');
@@ -849,12 +934,11 @@
                     return;
                 }
 
-                // Передаем полное имя файла (включая относительные вложенные папки) в построитель URI
                 var smbUri = makeSmbUri(selectedFile.name, torrent.name);
 
                 log('Выбран видеофайл:', selectedFile.name);
                 log('Размер:', formatSize(selectedFile.size));
-                log('SMB URI для плеера:', smbUri);
+                log('SMB URI:', smbUri);
 
                 notify('Запускаю: ' + fileTitle);
                 openFileInPlayer(smbUri, cfg().player_package, fileTitle);
@@ -864,8 +948,12 @@
 
     // ================= НАЖАТИЯ =================
 
+    // jQuery-совместимая обработка нажатий: работает и с пультом
+    // (событие hover:enter Lampa пробрасывает через jQuery),
+    // и с обычным кликом мыши/тачпадом.
     function bindPress(element, handler) {
         var last = 0;
+
         function wrapped(event) {
             var now = Date.now();
             if (now - last < ACTION_LOCK_MS) return;
@@ -905,7 +993,9 @@
                 name: 'qBittorrent'
             });
 
-            var params = [
+            // Значения хранятся в Lampa.Storage и переживают обновления.
+            // Пустые поля показывают «Не заполнено» (см. syncSettingPlace
+                var params = [
                 ['qbit_url', 'input', '', 'Адрес сервера', 'Пример: ' + EXAMPLE_URL],
                 ['qbit_user', 'input', '', 'Логин', 'Логин Web UI'],
                 ['qbit_pass', 'input', '', 'Пароль', 'Пароль Web UI'],
@@ -937,7 +1027,10 @@
 
     function addMenuItem() {
         try {
-            if (!window.Lampa || !Lampa.Menu || typeof Lampa.Menu.addButton !== 'function') return;
+            if (!window.Lampa || !Lampa.Menu ||
+                typeof Lampa.Menu.addButton !== 'function') {
+                return;
+            }
 
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
 
@@ -986,6 +1079,7 @@
                 if (!item) return;
 
                 var data = event.element || {};
+
                 var container = item.querySelector('.torrent-item__right') ||
                     item.querySelector('.torrent-item') || item;
 
@@ -999,6 +1093,8 @@
                 var title = data.Title || data.title || data.name || data.Name || '';
 
                 log('torrent render:', event.type);
+                log('magnet:', magnet);
+                log('hash:', hash);
 
                 var actions = document.createElement('div');
                 actions.className = 'qbit-direct-actions';
@@ -1010,13 +1106,17 @@
                 var playerButton = createButton('qbit-direct-player', '', function () {
                     if (!requireSetup()) return;
 
-                    var currentHash = hash || extractTorrentHash(data) || extractTorrentHash(event) || magnetHash(magnet);
+                    var currentHash = hash ||
+                        extractTorrentHash(data) ||
+                        extractTorrentHash(event) ||
+                        magnetHash(magnet);
                     log('Нажата Плеер. Хеш:', currentHash);
                     handlePlayerButton(currentHash);
                 }, playIcon);
 
                 var deleteButton = createButton('qbit-direct-delete', '', function () {
                     if (!requireSetup()) return;
+
                     var target = hash || magnet;
                     qbDelete(target);
                 }, deleteIcon);
@@ -1025,11 +1125,12 @@
                     if (!requireSetup()) return;
 
                     if (!magnet) {
-                        notify('Не найдена magnet-ссылка');
+                        notify('Не найдена magnet-ссылку');
                         return;
                     }
 
-                    addButton.innerHTML = downloadIcon + '<span class="qbit-btn-text">0%</span>';
+                    addButton.innerHTML = downloadIcon +
+                        '<span class="qbit-btn-text">0%</span>';
                     addButton.classList.add('qbit-loading');
 
                     qbAdd(magnet, title, function () {
@@ -1065,6 +1166,7 @@
                     });
                 }, downloadIcon);
 
+                // Плеер и Удалить всегда видимы и активны.
                 actions.appendChild(addButton);
                 actions.appendChild(playerButton);
                 actions.appendChild(deleteButton);
@@ -1085,25 +1187,128 @@
         style.id = 'qbit-direct-style';
 
         style.textContent =
-            '.torrent-item, .torrent-item__right { position:relative; margin-right:32px !important; }' +
-            '.qbit-direct-actions { display:flex; flex-direction:column; justify-content:center; align-items:center; position:absolute; right:-28px; top:0; bottom:0; z-index:999; gap:6px; }' +
-            '.qbit-direct-btn { display:flex; flex-direction:column; align-items:center; justify-content:center; width:24px; height:24px; background:none !important; border:none !important; border-radius:0 !important; padding:0; cursor:pointer; box-sizing:border-box; transition:transform 0.2s; }' +
-            '.qbit-direct-btn.focus { transform:scale(1.15); outline:none; }' +
-            '.qbit-direct-btn svg { width:20px; height:20px; fill:#27ae60; }' +
-            '.qbit-btn-text { font-size:8px; font-weight:bold; margin-top:-2px; line-height:1; color:#27ae60; }' +
+            '.torrent-item, .torrent-item__right {' +
+                'position:relative;' +
+                'margin-right:32px !important;' +
+            '}' +
+
+            '.qbit-direct-actions {' +
+                'display:flex;' +
+                'flex-direction:column;' +
+                'justify-content:center;' +
+                'align-items:center;' +
+                'position:absolute;' +
+                'right:-28px;' +
+                'top:0;' +
+                'bottom:0;' +
+                'z-index:999;' +
+                'gap:6px;' +
+            '}' +
+
+            '.qbit-direct-btn {' +
+                'display:flex;' +
+                'flex-direction:column;' +
+                'align-items:center;' +
+                'justify-content:center;' +
+                'width:24px;' +
+                'height:24px;' +
+                'background:none !important;' +
+                'border:none !important;' +
+                'border-radius:0 !important;' +
+                'padding:0;' +
+                'cursor:pointer;' +
+                'box-sizing:border-box;' +
+                'transition:transform 0.2s;' +
+            '}' +
+
+            '.qbit-direct-btn.focus {' +
+                'transform:scale(1.15);' +
+                'outline:none;' +
+            '}' +
+
+            '.qbit-direct-btn svg {' +
+                'width:20px;' +
+                'height:20px;' +
+                'fill:#27ae60;' +
+            '}' +
+
+            '.qbit-btn-text {' +
+                'font-size:8px;' +
+                'font-weight:bold;' +
+                'margin-top:-2px;' +
+                'line-height:1;' +
+                'color:#27ae60;' +
+            '}' +
+
             '.qbit-direct-player svg { fill:#3498db; }' +
             '.qbit-direct-delete svg { fill:#e74c3c; }' +
-            '.qbit-loading { opacity:0.7; pointer-events:none; }' +
-            '.qbit-empty-value { opacity:0.5 !important; font-style:italic; }' +
+
+            '.qbit-loading {' +
+                'opacity:0.7;' +
+                'pointer-events:none;' +
+            '}' +
+
+            // «Не заполнено» в настройках — приглушённым цветом.
+            '.qbit-empty-value {' +
+                'opacity:0.5 !important;' +
+                'font-style:italic;' +
+            '}' +
+
             '.qbit-wizard { padding:20px; }' +
-            '.qbit-wizard__desc { font-size:14px; margin-bottom:14px; color:inherit; }' +
+
+            '.qbit-wizard__desc {' +
+                'font-size:14px;' +
+                'margin-bottom:14px;' +
+                'color:inherit;' +
+            '}' +
+
             '.qbit-wizard__field { margin-bottom:12px; }' +
-            '.qbit-wizard__field label { display:block; font-size:12px; margin-bottom:4px; opacity:0.7; }' +
-            '.qbit-wizard__field input { width:100%; padding:8px 10px; font-size:14px; box-sizing:border-box; border-radius:6px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.08); color:inherit; }' +
-            '.qbit-wizard__hint { font-size:11px; margin-top:4px; opacity:0.5; }' +
-            '.qbit-wizard__actions { display:flex; gap:10px; margin-top:16px; }' +
-            '.qbit-wizard__btn { padding:10px 18px; font-size:14px; border-radius:6px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.1); color:inherit; cursor:pointer; }' +
-            '.qbit-wizard__save { background:#27ae60; border-color:#27ae60; color:#fff; }';
+
+            '.qbit-wizard__field label {' +
+                'display:block;' +
+                'font-size:12px;' +
+                'margin-bottom:4px;' +
+                'opacity:0.7;' +
+            '}' +
+
+            '.qbit-wizard__field input {' +
+                'width:100%;' +
+                'padding:8px 10px;' +
+                'font-size:14px;' +
+                'box-sizing:border-box;' +
+                'border-radius:6px;' +
+                'border:1px solid rgba(255,255,255,0.2);' +
+                'background:rgba(255,255,255,0.08);' +
+                'color:inherit;' +
+            '}' +
+
+            '.qbit-wizard__hint {' +
+                'font-size:11px;' +
+                'margin-top:4px;' +
+                'opacity:0.5;' +
+            '}' +
+
+            '.qbit-wizard__actions {' +
+                'display:flex;' +
+                'gap:10px;' +
+                'margin-top:16px;' +
+            '}' +
+
+            '.qbit-wizard__btn {' +
+                'padding:10px 18px;' +
+                'font-size:14px;' +
+                'border-radius:6px;' +
+                'border:1px solid rgba(255,255,255,0.2);' +
+                'background:rgba(255,255,255,0.1);' +
+                'color:inherit;' +
+                'cursor:pointer;' +
+            '}' +
+
+            '.qbit-wizard__save {' +
+                'background:#27ae60;' +
+                'border-color:#27ae60;' +
+                'color:#fff;' +
+            '}';
 
         document.head.appendChild(style);
     }
@@ -1119,12 +1324,13 @@
             initTorrentButton();
             addStyles();
 
+            // Обновляем надписи «Не заполнено» в настройках.
             syncSettingPlaceholders();
             setInterval(syncSettingPlaceholders, 1500);
 
             log('Путь загрузки:', cfg().savepath || '(не задан)');
             log('SMB:', cfg().smb_file || '(не задан)');
-            log('Плагин загружен с поддержкой глубоких подпапок');
+            log('Плагин загружен');
         } catch (error) {
             console.error('[qBittorrent] Initialization error:', error);
         }
@@ -1133,7 +1339,9 @@
     if (window.Lampa && Lampa.Listener) {
         initializePlugin();
     } else {
+        // Если событие appready уже прошло или не наступит — инициализируемся по таймауту.
         var initialized = false;
+
         function initOnce() {
             if (initialized) return;
             initialized = true;
@@ -1141,6 +1349,7 @@
         }
 
         document.addEventListener('appready', initOnce);
+
         setTimeout(function () {
             if (window.Lampa && Lampa.Listener) initOnce();
             else log('Lampa недоступна после таймаута ожидания.');
