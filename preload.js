@@ -7,33 +7,22 @@
 (function () {
     'use strict';
 
-   // Флаг для включения/отключения логирования ошибок
-    var errorLoggingEnabled = false;
-
-    // Функция для логирования ошибок с учетом настроек
-    function logError(event) {
-        if (errorLoggingEnabled) {
-            try {
-                console.error('[qBittorrent] SCRIPT ERROR:', event.message,
-                    'строка:', event.lineno, event.error);
-                if (window.Lampa && Lampa.Noty) {
-                    Lampa.Noty.show('qBittorrent: ' + event.message +
-                        ' (строка ' + event.lineno + ')');
-                }
-            } catch (e) {}
-        }
-    }
-
-    // Обработчик ошибок
+    // Глобальный перехват ошибок — чтобы страница не падала.
     window.addEventListener('error', function (event) {
-        logError(event);
+        try {
+            console.error('[qBittorrent] SCRIPT ERROR:', event.message,
+                'строка:', event.lineno, event.error);
+            if (window.Lampa && Lampa.Noty) {
+                Lampa.Noty.show('qBittorrent: ' + event.message +
+                    ' (строка ' + event.lineno + ')');
+            }
+        } catch (e) {}
     });
 
     window.addEventListener('unhandledrejection', function (event) {
-        if (errorLoggingEnabled) {
-            console.error('[qBittorrent] PROMISE ERROR:', event.reason);
-        }
+        console.error('[qBittorrent] PROMISE ERROR:', event.reason);
     });
+
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
   
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
@@ -1009,7 +998,6 @@
             }
 
             var icon = '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
-
             Lampa.Menu.addButton(icon, 'qBittorrent', function () {
                 Lampa.Controller.toggle('settings');
                 setTimeout(function () {
