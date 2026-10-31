@@ -24,14 +24,12 @@
     });
 
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
-    // Значения НЕ подставляются автоматически — только как подсказки
-    // под полями мастера при первой настройке.
-
+  
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
-    var EXAMPLE_SAVEPATH = '/opt/download/download';
+    var EXAMPLE_SAVEPATH = '/mnt/storage/torrents';
     var EXAMPLE_SMB_FILE = 'smb://192.168.1.1/MEDIA/';
 
-    var EMPTY_LABEL = 'Не заполнено';
+    var EMPTY_LABEL = 'Пусто';
 
     // Заполняемые поля, для которых показываем «Не заполнено».
     var SETTING_TEXT_FIELDS = [
