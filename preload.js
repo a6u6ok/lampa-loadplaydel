@@ -2,23 +2,47 @@
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Основа: kostya4000/lampa-qbit
 //
-// Функции:
-// - Добавление торрентов
-// - Автоматическое восстановление статуса после перезагрузки списка
-// - Отображение процентов загрузки
-// - Надпись «Загружено» при 100%
-// - Автоматическое обновление статуса каждые 3 секунды
-// - Запуск видео через встроенный плеер Lampa
-// - Запуск внешнего Android-плеера через Intent ACTION_VIEW
-// - SMB с поддержкой дополнительных папок
+// Возможности:
+// - Добавление торрентов в qBittorrent
+// - Отслеживание прогресса загрузки
 // - Удаление торрентов
-// - Мастер настройки
+// - Запуск загруженных видео через встроенный плеер Lampa
+// - Резервный запуск через AndroidJS
+// - Поддержка автоматически создаваемых папок торрентов
+// - Формирование SMB URI с сохранением вложенных каталогов
+// - Мастер первоначальной настройки
+// - Настройки сохраняются в Lampa.Storage
 // ============================================================================
 
 (function () {
     'use strict';
 
-    // ================= ОСНОВНЫЕ НАСТРОЙКИ =================
+    // ================= ОБРАБОТКА ОШИБОК =================
+
+    window.addEventListener('error', function (event) {
+        try {
+            console.error(
+                '[qBittorrent] SCRIPT ERROR:',
+                event.message,
+                'строка:',
+                event.lineno,
+                event.error
+            );
+
+            if (window.Lampa && Lampa.Noty) {
+                Lampa.Noty.show(
+                    'qBittorrent: ' + event.message +
+                    ' (строка ' + event.lineno + ')'
+                );
+            }
+        } catch (e) {}
+    });
+
+    window.addEventListener('unhandledrejection', function (event) {
+        console.error('[qBittorrent] PROMISE ERROR:', event.reason);
+    });
+
+    // ================= ПРИМЕРЫ НАСТРОЕК =================
 
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
     var EXAMPLE_SAVEPATH = '/mnt/storage/torrents';
@@ -32,8 +56,7 @@
         'qbit_pass',
         'qbit_savepath',
         'qbit_category',
-        'qbit_smb_file',
-        'qbit_player_package'
+        'qbit_smb_file'
     ];
 
     var DEBUG = true;
@@ -53,28 +76,7 @@
         'webm', 'flv', 'vob', 'ogv', '3gp'
     ];
 
-    // Храним таймеры обновления статусов.
-    var torrentTimers = [];
-
-    // ================= ОБРАБОТКА ОШИБОК =================
-
-    window.addEventListener('error', function (event) {
-        console.error(
-            '[qBittorrent] SCRIPT ERROR:',
-            event.message,
-            event.lineno,
-            event.error
-        );
-    });
-
-    window.addEventListener('unhandledrejection', function (event) {
-        console.error(
-            '[qBittorrent] PROMISE ERROR:',
-            event.reason
-        );
-    });
-
-    // ================= ЛОГИ И УВЕДОМЛЕНИЯ =================
+    // ================= ЛОГИ =================
 
     function log() {
         if (DEBUG) {
@@ -93,7 +95,9 @@
                 Lampa.Noty.show(text);
                 return;
             }
-        } catch (e) {}
+        } catch (error) {
+            console.error('[qBittorrent] notify error:', error);
+        }
 
         console.log('[qBittorrent]', text);
     }
@@ -170,6 +174,8 @@
                 storeGet('qbit_delete_files', false), false
             ),
 
+            // Новый параметр:
+            // SMB-корень уже содержит папку конкретного торрента.
             smb_torrent_folder: isTrue(
                 storeGet('qbit_smb_torrent_folder', false), false
             ),
@@ -193,7 +199,7 @@
         return String(cfg().url || '').replace(/\/+$/, '');
     }
 
-    // ================= ПУТИ =================
+    // ================= РАБОТА С ПУТЯМИ =================
 
     function joinPath(a, b) {
         if (!a) return b || '';
@@ -215,10 +221,12 @@
 
         value = value.trim();
 
+        // SHA-1 infohash.
         if (/^[a-f0-9]{40}$/i.test(value)) {
             return value.toLowerCase();
         }
 
+        // BitTorrent v2 infohash.
         if (/^[a-f0-9]{64}$/i.test(value)) {
             return value.toLowerCase();
         }
@@ -333,64 +341,6 @@
             false;
     }
 
-    // Извлекает номер сезона и серии из типичных имён:
-    // Show.S02E01, Show.2x01, Season 2/Episode 01.
-    function getEpisodeOrder(filename) {
-        var value = String(filename || '').replace(/\\/g, '/');
-        var match = /(?:^|[^a-z0-9])s(\d{1,2})[ ._-]*e(\d{1,3})(?:[^0-9]|$)/i.exec(value);
-
-        if (!match) {
-            match = /(?:^|[^0-9])(\d{1,2})x(\d{1,3})(?:[^0-9]|$)/i.exec(value);
-        }
-
-        if (match) {
-            return {
-                season: parseInt(match[1], 10),
-                episode: parseInt(match[2], 10),
-                known: true
-            };
-        }
-
-        // Поддержка структуры каталогов Season 2/Episode 01.
-        var seasonMatch = /season[ ._-]*(\d{1,2})/i.exec(value);
-        var episodeMatch = /episode[ ._-]*(\d{1,3})/i.exec(value);
-        if (seasonMatch && episodeMatch) {
-            return {
-                season: parseInt(seasonMatch[1], 10),
-                episode: parseInt(episodeMatch[1], 10),
-                known: true
-            };
-        }
-
-        return { season: 0, episode: 0, known: false };
-    }
-
-    function compareEpisodeFiles(a, b) {
-        var orderA = getEpisodeOrder(a.name);
-        var orderB = getEpisodeOrder(b.name);
-
-        // Если номера распознаны у обоих файлов — сортируем по сезону и серии.
-        if (orderA.known && orderB.known) {
-            if (orderA.season !== orderB.season) {
-                return orderA.season - orderB.season;
-            }
-            if (orderA.episode !== orderB.episode) {
-                return orderA.episode - orderB.episode;
-            }
-        } else if (orderA.known !== orderB.known) {
-            // Файлы с явным номером серии ставим перед неопознанными видео.
-            return orderA.known ? -1 : 1;
-        }
-
-        // Резервная естественная сортировка по имени, не по размеру файла.
-        var nameA = String(a.name || '').toLowerCase();
-        var nameB = String(b.name || '').toLowerCase();
-        return nameA.localeCompare(nameB, undefined, {
-            numeric: true,
-            sensitivity: 'base'
-        });
-    }
-
     function formatSize(bytes) {
         bytes = Number(bytes) || 0;
 
@@ -436,6 +386,7 @@
                     valueEl.classList.remove('qbit-empty-value');
                 } else if (valueEl.textContent !== EMPTY_LABEL) {
                     valueEl.textContent = EMPTY_LABEL;
+
                     valueEl.classList.add('qbit-empty-value');
                 }
             });
@@ -446,7 +397,9 @@
 
     function openSetupWizard(onDone) {
         if (!window.Lampa || !Lampa.Modal) {
-            notify('Настройте плагин: Настройки → qBittorrent');
+            notify(
+                'Настройте плагин: Настройки → qBittorrent'
+            );
             return;
         }
 
@@ -525,8 +478,13 @@
             }
         });
 
-        var saveButton = html.querySelector('.qbit-wizard__save');
-        var cancelButton = html.querySelector('.qbit-wizard__cancel');
+        var saveButton = html.querySelector(
+            '.qbit-wizard__save'
+        );
+
+        var cancelButton = html.querySelector(
+            '.qbit-wizard__cancel'
+        );
 
         function close() {
             try {
@@ -655,10 +613,16 @@
                 return res.text();
             })
             .then(function (text) {
+                log(
+                    'Fetch response:',
+                    String(text).substring(0, 300)
+                );
+
                 callback(text);
             })
             .catch(function (error) {
                 console.error('[qBittorrent] fetch error:', error);
+
                 callback(null);
             });
     }
@@ -738,7 +702,10 @@
                     String(requestId)
                 );
             } catch (error) {
-                console.error('[qBittorrent] getResp:', error);
+                console.error(
+                    '[qBittorrent] getResp error:',
+                    error
+                );
             }
 
             if (
@@ -766,7 +733,8 @@
 
     function requestBaseHeaders() {
         return {
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type':
+                'application/x-www-form-urlencoded'
         };
     }
 
@@ -801,6 +769,7 @@
             headers: CT_FORM
 
         }, function (response) {
+
             if (
                 !response ||
                 /Forbidden|403|Fails/i.test(response)
@@ -900,6 +869,7 @@
             headers: authHeaders()
 
         }, function (response) {
+
             if (
                 response === null ||
                 response === undefined
@@ -915,11 +885,13 @@
 
             notify('Отправлено в qBittorrent');
 
-            if (onComplete) onComplete();
+            if (onComplete) {
+                onComplete();
+            }
         });
     }
 
-    // ================= УДАЛЕНИЕ =================
+    // ================= УДАЛЕНИЕ ТОРРЕНТА =================
 
     function qbDelete(hashOrMagnet) {
         var hash = magnetHash(hashOrMagnet);
@@ -943,6 +915,7 @@
             headers: authHeaders()
 
         }, function (response) {
+
             if (
                 response === null ||
                 response === undefined
@@ -960,68 +933,8 @@
         });
     }
 
-    // ========================================================================
-    // НОВАЯ СИСТЕМА СТАТУСОВ ТОРРЕНТОВ
-    // ========================================================================
+    // ================= ПРОГРЕСС ЗАГРУЗКИ =================
 
-    // Меняем текст кнопки загрузки.
-    function setTorrentButtonStatus(button, progress) {
-        if (!button) return;
-
-        var span = button.querySelector('.qbit-btn-text');
-
-        if (!span) {
-            span = document.createElement('span');
-            span.className = 'qbit-btn-text';
-            button.appendChild(span);
-        }
-
-        progress = Math.max(
-            0,
-            Math.min(1, Number(progress) || 0)
-        );
-
-        var percent = Math.floor(progress * 100);
-
-        if (progress >= 0.999999) {
-            // Торрент загружен полностью.
-            span.textContent = 'Загружено';
-
-            button.classList.remove('qbit-loading');
-            button.classList.add('qbit-completed');
-
-            button.setAttribute(
-                'data-qbit-progress',
-                '100'
-            );
-
-            button.setAttribute(
-                'title',
-                'Торрент загружен полностью'
-            );
-
-            log('Статус торрента: Загружено');
-
-        } else {
-            // Торрент ещё загружается.
-            span.textContent = percent + '%';
-
-            button.classList.remove('qbit-completed');
-            button.classList.add('qbit-loading');
-
-            button.setAttribute(
-                'data-qbit-progress',
-                String(percent)
-            );
-
-            button.setAttribute(
-                'title',
-                'Загрузка: ' + percent + '%'
-            );
-        }
-    }
-
-    // Запрашиваем статус конкретного торрента у qBittorrent.
     function checkTorrentProgress(hash, onProgress) {
         if (!hash) return;
 
@@ -1035,6 +948,7 @@
             headers: authHeaders()
 
         }, function (response) {
+
             if (
                 typeof response !== 'string' ||
                 !response.length
@@ -1050,11 +964,9 @@
                     (data.torrents || []);
 
                 if (torrents.length > 0) {
-                    var progress = Number(
-                        torrents[0].progress
-                    ) || 0;
-
-                    onProgress(progress, torrents[0]);
+                    onProgress(
+                        Number(torrents[0].progress) || 0
+                    );
                 }
 
             } catch (error) {
@@ -1066,67 +978,8 @@
         });
     }
 
-    // Восстанавливаем статус после повторного открытия списка.
-    function restoreTorrentStatus(hash, button, item) {
-        if (!hash || !button) return;
-
-        log('Восстанавливаю статус:', hash);
-
-        // До подтверждения наличия торрента оставляем исходную надпись qB.
-        // Процент или «Загружено» появятся только после ответа qBittorrent.
-        var span = button.querySelector('.qbit-btn-text');
-
-        if (span && !button.classList.contains('qbit-loading') &&
-            !button.classList.contains('qbit-completed')) {
-            span.textContent = 'qB';
-        }
-
-        // Первичная проверка сразу после появления карточки.
-        checkTorrentProgress(hash, function (progress) {
-            if (!document.body.contains(button)) return;
-
-            setTorrentButtonStatus(button, progress);
-        });
-
-        // Обновляем статус каждые 3 секунды.
-        var timer = setInterval(function () {
-            try {
-                if (
-                    !document.body.contains(button) ||
-                    !document.body.contains(item)
-                ) {
-                    clearInterval(timer);
-
-                    var index = torrentTimers.indexOf(timer);
-
-                    if (index !== -1) {
-                        torrentTimers.splice(index, 1);
-                    }
-
-                    return;
-                }
-
-                checkTorrentProgress(hash, function (progress) {
-                    if (!document.body.contains(button)) return;
-
-                    setTorrentButtonStatus(button, progress);
-                });
-
-            } catch (error) {
-                clearInterval(timer);
-
-                console.error(
-                    '[qBittorrent] status timer error:',
-                    error
-                );
-            }
-        }, POLL_INTERVAL);
-
-        torrentTimers.push(timer);
-    }
-
     // ========================================================================
-    // SMB — ФОРМИРОВАНИЕ ПУТИ
+    // SMB — ИСПРАВЛЕННАЯ ОБРАБОТКА ВЛОЖЕННЫХ ПАПОК
     // ========================================================================
 
     function encodeSmbPath(path) {
@@ -1179,114 +1032,72 @@
         return path.replace(/^\/+/, '');
     }
 
-    // Нормализует путь и убирает завершающие/начальные слеши.
-    function cleanFsPath(path) {
-        return String(path || '')
-            .replace(/\\/g, '/')
-            .replace(/\/{2,}/g, '/')
-            .replace(/\/+$/, '');
-    }
+    // Главная исправленная функция.
+    //
+    // qBittorrent может создавать:
+    //
+    // /torrents/Название торрента/film.mkv
+    //
+    // или:
+    //
+    // /torrents/Название торрента/BDMV/movie.mkv
+    //
+    // Имя дополнительной папки сохраняется.
+    //
+    // Удаляется оно только тогда, когда включён
+    // параметр qbit_smb_torrent_folder.
 
-    // Возвращает путь относительно root только если path действительно
-    // находится внутри root. Иначе возвращает пустую строку.
-    function relativeFsPath(root, path) {
-        root = cleanFsPath(root);
-        path = cleanFsPath(path);
-        if (!root || !path) return '';
-        if (path === root) return '';
-        if (path.indexOf(root + '/') === 0) {
-            return path.substring(root.length + 1);
-        }
-        return '';
-    }
-
-    // qBittorrent отдаёт file.name относительно корня торрента, а иногда
-    // путь уже содержит имя корневой папки. Учитываем оба варианта.
-    function makeSmbUri(fileName, torrent) {
+    function makeSmbUri(fileName, torrentName) {
         var config = cfg();
-        torrent = torrent || {};
 
         var smbRoot = String(config.smb_file || '')
             .trim()
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
-        var file = cleanFsPath(fileName).replace(/^\/+/, '');
-        var configuredSave = cleanFsPath(config.savepath);
-        var torrentSave = cleanFsPath(torrent.save_path || configuredSave);
-        var contentPath = cleanFsPath(torrent.content_path || '');
-        var relativeBase = '';
+        var relative = String(fileName || '')
+            .replace(/\\/g, '/');
 
-        // Корень SMB соответствует общей папке загрузок (config.savepath).
-        // Если торрент сохранён в категории/подпапке, добавляем эту подпапку.
-        if (configuredSave && torrentSave) {
-            relativeBase = relativeFsPath(configuredSave, torrentSave);
-        }
+        // Убираем локальный корень загрузок, если он присутствует.
+        relative = stripLocalRoots(relative, config);
 
-        // content_path у многосоставного торрента обычно указывает на папку
-        // самого торрента; у одиночного файла — на сам файл.
-        var contentRelative = '';
-        if (contentPath && torrentSave) {
-            contentRelative = relativeFsPath(torrentSave, contentPath);
-            var contentLeaf = contentPath.split('/').pop();
-            var fileLeaf = file.split('/').pop();
-            if (contentLeaf === fileLeaf) contentRelative = '';
-        }
+        // Убираем имя торрента ТОЛЬКО по настройке.
+        if (config.smb_torrent_folder && torrentName) {
+            var folder = String(torrentName)
+                .replace(/\\/g, '/')
+                .replace(/\/+$/, '');
 
-        // Если file.name уже содержит папку content_path, не добавляем её снова.
-        if (contentRelative) {
-            var contentLeafName = contentRelative.split('/').pop();
-            if (file !== contentRelative &&
-                file.indexOf(contentRelative + '/') !== 0 &&
-                file.indexOf(contentLeafName + '/') !== 0) {
-                file = contentRelative + '/' + file;
-            }
-        } else if (torrent.name) {
-            // Запасной вариант для старых версий API без content_path.
-            var torrentFolder = cleanFsPath(torrent.name).replace(/^\/+/, '');
-            if (torrentFolder && file.indexOf(torrentFolder + '/') !== 0 &&
-                file !== torrentFolder) {
-                file = torrentFolder + '/' + file;
+            if (
+                folder &&
+                relative.indexOf(folder + '/') === 0
+            ) {
+                relative = relative.substring(
+                    folder.length + 1
+                );
             }
         }
 
-        // Если qB вернул абсолютный путь, приводим его к пути относительно
-        // общей загрузочной папки, а не добавляем абсолютный путь в SMB URL.
-        if (/^(?:[A-Za-z]:\/|\/)/.test(file)) {
-            var fromTorrentSave = relativeFsPath(torrentSave, file);
-            var fromConfiguredSave = relativeFsPath(configuredSave, file);
-            if (fromConfiguredSave) {
-                file = fromConfiguredSave;
-            } else if (fromTorrentSave) {
-                file = [relativeBase, fromTorrentSave].filter(Boolean).join('/');
-            } else {
-                file = stripLocalRoots(file, config);
-            }
-        } else {
-            file = [relativeBase, file].filter(Boolean).join('/');
-        }
+        var encoded = encodeSmbPath(relative);
 
-        // Удаляем случайные повторения папки торрента, возникающие если API
-        // уже включил её в file.name и одновременно сообщил content_path.
-        file = file.replace(/^\/+/, '').replace(/\/{2,}/g, '/');
+        var result = smbRoot +
+            (encoded ? '/' + encoded : '');
 
-        var result = smbRoot + (file ? '/' + encodeSmbPath(file) : '');
         log('SMB root:', smbRoot);
-        log('Torrent:', torrent.name || '');
-        log('Save path:', torrentSave);
-        log('Content path:', contentPath);
-        log('File from API:', fileName);
-        log('SMB relative path:', file);
-        log('SMB URI:', result);
+        log('Torrent name:', torrentName);
+        log('File name:', fileName);
+        log('Relative path:', relative);
+        log('Final SMB URI:', result);
+
         return result;
     }
 
     // ========================================================================
-    // ЗАПУСК ВИДЕО
+    // ЗАПУСК ВИДЕО В LAMPA
     // ========================================================================
 
     function openFileInPlayer(fileUri, playerPkg, title) {
         var uri = String(fileUri || '').trim();
+
         var pkg = String(playerPkg || '').trim();
 
         if (!uri) {
@@ -1295,8 +1106,12 @@
         }
 
         var extension = '';
+
         var match = /\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
-        if (match) extension = '.' + match[1].toLowerCase();
+
+        if (match) {
+            extension = '.' + match[1].toLowerCase();
+        }
 
         var playerData = {
             url: uri,
@@ -1308,95 +1123,10 @@
 
         log('Запуск видео:', playerData);
 
-        // Внешний плеер: Android Intent URI с extras из официального API Vimu.
-        // Нативные методы AndroidJS не вызываем: их наличие зависит от сборки Lampa.
-        // Если внешний плеер выбран, не передаём тот же файл во встроенный плеер.
-        if (pkg) {
-            if (!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(pkg)) {
-                console.error('[qBittorrent] Некорректный package плеера:', pkg);
-                notify('Неверный идентификатор внешнего плеера');
-                return;
-            }
+        // ------------------------------------------------
+        // 1. ВСТРОЕННЫЙ ПЛЕЕР LAMPA
+        // ------------------------------------------------
 
-            if (!/^smb:\/\//i.test(uri) && !/^https?:\/\//i.test(uri)) {
-                console.error('[qBittorrent] Неподдерживаемый URI внешнего плеера:', uri);
-                notify('Неподдерживаемый адрес видеофайла');
-                return;
-            }
-
-            // Vimu Player API: передаём имя контента и включаем resume
-            // через Intent extras. В URI-синтаксисе Android:
-            // S.<key> — String extra, B.<key> — Boolean extra.
-            // Для MKV задаём точный MIME, для остальных форматов — по расширению.
-            var schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(uri);
-            var scheme = schemeMatch ? schemeMatch[1].toLowerCase() : 'smb';
-            var intentTarget = uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-            var mimeByExtension = {
-                mkv: 'video/x-matroska',
-                mp4: 'video/mp4',
-                m4v: 'video/mp4',
-                avi: 'video/x-msvideo',
-                mov: 'video/quicktime',
-                webm: 'video/webm',
-                ts: 'video/mp2t',
-                m2ts: 'video/mp2t',
-                mpg: 'video/mpeg',
-                mpeg: 'video/mpeg',
-                wmv: 'video/x-ms-wmv',
-                flv: 'video/x-flv',
-                ogv: 'video/ogg',
-                '3gp': 'video/3gpp'
-            };
-            var fileExtMatch = /\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
-            var fileExt = fileExtMatch ? fileExtMatch[1].toLowerCase() : '';
-            var mimeType = mimeByExtension[fileExt] || 'video/*';
-            var contentTitle = String(title || uri.split('/').pop() || 'qBittorrent');
-            var intentUri = 'intent://' + intentTarget +
-                '#Intent;scheme=' + scheme +
-                ';action=android.intent.action.VIEW' +
-                ';type=' + encodeURIComponent(mimeType) +
-                ';S.forcename=' + encodeURIComponent(contentTitle) +
-                ';B.forceresume=true' +
-                ';package=' + pkg +
-                ';end';
-
-            log('Запуск Vimu через Android Intent API:', {
-                package: pkg,
-                uri: uri,
-                mime: mimeType,
-                forcename: contentTitle,
-                forceresume: true,
-                intent: intentUri
-            });
-
-            try {
-                // Скрытая ссылка с кликом обычно корректнее обрабатывается
-                // Android WebView, чем вызов несуществующего JS-моста.
-                var link = document.createElement('a');
-                link.href = intentUri;
-                link.style.display = 'none';
-                link.rel = 'noopener';
-                document.body.appendChild(link);
-                link.click();
-                setTimeout(function () {
-                    if (link.parentNode) link.parentNode.removeChild(link);
-                }, 1000);
-                log('Android Intent отправлен для внешнего плеера');
-            } catch (error) {
-                console.error('[qBittorrent] Ошибка Android Intent:', error);
-                try {
-                    window.location.href = intentUri;
-                    log('Android Intent передан через window.location');
-                } catch (fallbackError) {
-                    console.error('[qBittorrent] Ошибка резервного Intent:', fallbackError);
-                    notify('Не удалось вызвать внешний плеер');
-                }
-            }
-            return;
-        }
-
-        // Встроенный плеер Lampa используется только если внешний плеер
-        // не выбран в настройках.
         try {
             if (
                 window.Lampa &&
@@ -1404,17 +1134,81 @@
                 typeof Lampa.Player.play === 'function'
             ) {
                 Lampa.Player.play(playerData);
-                log('Видео передано встроенному плееру Lampa');
+
+                log('Видео передано Lampa.Player');
+
                 return;
             }
         } catch (error) {
-            console.error('[qBittorrent] Lampa.Player error:', error);
+            console.error(
+                '[qBittorrent] Lampa.Player error:',
+                error
+            );
+        }
+
+        // ------------------------------------------------
+        // 2. ANDROIDJS OPENPLAYER
+        // ------------------------------------------------
+
+        try {
+            if (
+                window.AndroidJS &&
+                typeof window.AndroidJS.openPlayer === 'function'
+            ) {
+                window.AndroidJS.openPlayer(
+                    uri,
+                    pkg,
+                    title || '',
+                    'video/*'
+                );
+
+                return;
+            }
+        } catch (error) {
+            console.error(
+                '[qBittorrent] AndroidJS error:',
+                error
+            );
+        }
+
+        // ------------------------------------------------
+        // 3. ANDROID INTENT
+        // ------------------------------------------------
+
+        try {
+            if (
+                window.AndroidJS &&
+                typeof window.AndroidJS.startActivity === 'function'
+            ) {
+                var intent = {
+                    action: 'android.intent.action.VIEW',
+                    data: uri,
+                    type: 'video/*'
+                };
+
+                if (pkg) {
+                    intent.package = pkg;
+                }
+
+                window.AndroidJS.startActivity(
+                    JSON.stringify(intent)
+                );
+
+                return;
+            }
+        } catch (error) {
+            console.error(
+                '[qBittorrent] startActivity error:',
+                error
+            );
         }
 
         notify('Не удалось запустить видеоплеер');
     }
 
-    // ================= ПОЛУЧЕНИЕ ФАЙЛОВ ТОРРЕНТА =================
+    // ========================================================================
+    // ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК
+    // ========================================================================
 
     function handlePlayerButton(hash) {
         if (!hash) {
@@ -1436,6 +1230,7 @@
             headers: authHeaders()
 
         }, function (infoResponse) {
+
             if (!infoResponse) {
                 notify('Не удалось получить информацию о торренте');
                 return;
@@ -1485,6 +1280,7 @@
                 headers: authHeaders()
 
             }, function (filesResponse) {
+
                 if (!filesResponse) {
                     notify('Не удалось получить список файлов');
                     return;
@@ -1514,6 +1310,7 @@
                     return;
                 }
 
+                // Ищем полностью загруженные видео.
                 var videoFiles = files.filter(function (file) {
                     return (
                         isVideoFile(file.name) &&
@@ -1526,13 +1323,12 @@
                     return;
                 }
 
-                // Не выбираем самый большой файл: это могло запускать 2-ю,
-                // 3-ю или другую серию. Сначала выбираем первую серию по SxxEyy.
-                videoFiles.sort(compareEpisodeFiles);
+                // Самое большое видео первым.
+                videoFiles.sort(function (a, b) {
+                    return Number(b.size) - Number(a.size);
+                });
 
                 var selectedFile = videoFiles[0];
-                log('Всего готовых видеофайлов:', videoFiles.length);
-                log('Выбрана первая серия по порядку:', selectedFile.name);
 
                 var fileTitle = String(selectedFile.name)
                     .replace(/\\/g, '/')
@@ -1541,7 +1337,7 @@
 
                 var smbUri = makeSmbUri(
                     selectedFile.name,
-                    torrent
+                    torrent.name
                 );
 
                 log('Выбран файл:', selectedFile.name);
@@ -1567,7 +1363,9 @@
         function wrapped(event) {
             var now = Date.now();
 
-            if (now - last < ACTION_LOCK_MS) return;
+            if (now - last < ACTION_LOCK_MS) {
+                return;
+            }
 
             last = now;
 
@@ -1599,7 +1397,7 @@
         }
     }
 
-    // ================= НАСТРОЙКИ =================
+    // ================= РЕГИСТРАЦИЯ НАСТРОЕК =================
 
     function registerSettings() {
         try {
@@ -1626,18 +1424,95 @@
             });
 
             var params = [
-                ['qbit_url', 'input', '', 'Адрес сервера', 'Пример: ' + EXAMPLE_URL],
-                ['qbit_user', 'input', '', 'Логин', 'Логин Web UI'],
-                ['qbit_pass', 'input', '', 'Пароль', 'Пароль Web UI'],
-                ['qbit_bypass', 'trigger', true, 'Обход аутентификации', 'Для локальной сети'],
-                ['qbit_savepath', 'input', '', 'Путь загрузки qBittorrent', 'Пример: ' + EXAMPLE_SAVEPATH],
-                ['qbit_category', 'input', '', 'Категория', 'Например: video'],
-                ['qbit_auto_cat_path', 'trigger', true, 'Добавлять категорию к пути', ''],
-                ['qbit_rename', 'trigger', true, 'Переименовывать торрент', ''],
-                ['qbit_confirm', 'trigger', true, 'Проверять добавление', ''],
-                ['qbit_delete_files', 'trigger', false, 'Удалять файлы торрента', ''],
-                ['qbit_smb_file', 'input', '', 'Корень SMB-папки загрузок', 'Пример: ' + EXAMPLE_SMB_FILE],
-                ['qbit_player_package', 'input', '', 'Пакет внешнего плеера Android', 'Для Vimu: net.gtvbox.videoplayer (пусто — встроенный плеер Lampa)'],
+                [
+                    'qbit_url',
+                    'input',
+                    '',
+                    'Адрес сервера',
+                    'Пример: ' + EXAMPLE_URL
+                ],
+
+                [
+                    'qbit_user',
+                    'input',
+                    '',
+                    'Логин',
+                    'Логин Web UI'
+                ],
+
+                [
+                    'qbit_pass',
+                    'input',
+                    '',
+                    'Пароль',
+                    'Пароль Web UI'
+                ],
+
+                [
+                    'qbit_bypass',
+                    'trigger',
+                    true,
+                    'Обход аутентификации',
+                    'Для локальной сети'
+                ],
+
+                [
+                    'qbit_savepath',
+                    'input',
+                    '',
+                    'Путь загрузки qBittorrent',
+                    'Пример: ' + EXAMPLE_SAVEPATH
+                ],
+
+                [
+                    'qbit_category',
+                    'input',
+                    '',
+                    'Категория',
+                    'Например: video'
+                ],
+
+                [
+                    'qbit_auto_cat_path',
+                    'trigger',
+                    true,
+                    'Добавлять категорию к пути',
+                    ''
+                ],
+
+                [
+                    'qbit_rename',
+                    'trigger',
+                    true,
+                    'Переименовывать торрент',
+                    ''
+                ],
+
+                [
+                    'qbit_confirm',
+                    'trigger',
+                    true,
+                    'Проверять добавление',
+                    ''
+                ],
+
+                [
+                    'qbit_delete_files',
+                    'trigger',
+                    false,
+                    'Удалять файлы торрента',
+                    ''
+                ],
+
+                [
+                    'qbit_smb_file',
+                    'input',
+                    '',
+                    'Корень SMB-папки загрузок',
+                    'Пример: ' + EXAMPLE_SMB_FILE
+                ],
+
+                // НОВАЯ НАСТРОЙКА.
                 [
                     'qbit_smb_torrent_folder',
                     'trigger',
@@ -1722,7 +1597,7 @@
         }
     }
 
-    // ================= СОЗДАНИЕ КНОПОК =================
+    // ================= КНОПКИ ТОРРЕНТА =================
 
     function createButton(className, text, handler, iconSvg) {
         var button = document.createElement('div');
@@ -1740,6 +1615,7 @@
             var span = document.createElement('span');
 
             span.textContent = text;
+
             span.className = 'qbit-btn-text';
 
             button.appendChild(span);
@@ -1749,10 +1625,6 @@
 
         return button;
     }
-
-    // ========================================================================
-    // ОТОБРАЖЕНИЕ ТОРРЕНТОВ И ВОССТАНОВЛЕНИЕ СТАТУСА
-    // ========================================================================
 
     function initTorrentButton() {
         if (!window.Lampa || !Lampa.Listener) {
@@ -1786,7 +1658,6 @@
                     item.querySelector('.torrent-item') ||
                     item;
 
-                // Не создаём повторные кнопки.
                 if (
                     container.querySelector('.qbit-direct-actions')
                 ) {
@@ -1839,7 +1710,7 @@
                     'M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>' +
                     '</svg>';
 
-                // ---------------- КНОПКА ПЛЕЕРА ----------------
+                // ---------------- ПЛЕЕР ----------------
 
                 var playerButton = createButton(
                     'qbit-direct-player',
@@ -1858,7 +1729,7 @@
                     playIcon
                 );
 
-                // ---------------- КНОПКА УДАЛЕНИЯ ----------------
+                // ---------------- УДАЛЕНИЕ ----------------
 
                 var deleteButton = createButton(
                     'qbit-direct-delete',
@@ -1866,12 +1737,14 @@
                     function () {
                         if (!requireSetup()) return;
 
-                        qbDelete(hash || magnet);
+                        var target = hash || magnet;
+
+                        qbDelete(target);
                     },
                     deleteIcon
                 );
 
-                // ---------------- КНОПКА ЗАГРУЗКИ ----------------
+                // ---------------- ДОБАВЛЕНИЕ ----------------
 
                 var addButton = createButton(
                     'qbit-direct-add',
@@ -1884,20 +1757,9 @@
                             return;
                         }
 
-                        // Защита от повторного добавления.
-                        if (
-                            addButton.classList.contains('qbit-completed')
-                        ) {
-                            notify('Торрент уже загружен');
-                            return;
-                        }
-
-                        if (
-                            addButton.classList.contains('qbit-loading')
-                        ) {
-                            notify('Торрент уже добавлен или загружается');
-                            return;
-                        }
+                        addButton.innerHTML =
+                            downloadIcon +
+                            '<span class="qbit-btn-text">0%</span>';
 
                         addButton.classList.add('qbit-loading');
 
@@ -1906,54 +1768,67 @@
                                 notify(
                                     'Торрент добавлен, но хеш не определён'
                                 );
+
                                 return;
                             }
 
-                            notify('Отслеживаю загрузку');
+                            var pollTimer = setInterval(function () {
+                                try {
+                                    if (
+                                        !document.body.contains(item)
+                                    ) {
+                                        clearInterval(pollTimer);
+                                        return;
+                                    }
 
-                            // Сразу запрашиваем текущий прогресс.
-                            checkTorrentProgress(
-                                hash,
-                                function (progress) {
-                                    setTorrentButtonStatus(
-                                        addButton,
-                                        progress
+                                    checkTorrentProgress(
+                                        hash,
+                                        function (progress) {
+                                            if (progress >= 1) {
+                                                clearInterval(pollTimer);
+
+                                                addButton.style.display =
+                                                    'none';
+
+                                                notify(
+                                                    'Загрузка завершена!'
+                                                );
+
+                                            } else {
+                                                var span =
+                                                    addButton.querySelector(
+                                                        '.qbit-btn-text'
+                                                    );
+
+                                                if (span) {
+                                                    span.textContent =
+                                                        Math.floor(
+                                                            progress * 100
+                                                        ) + '%';
+                                                }
+                                            }
+                                        }
+                                    );
+
+                                } catch (error) {
+                                    clearInterval(pollTimer);
+
+                                    console.error(
+                                        '[qBittorrent] poll error:',
+                                        error
                                     );
                                 }
-                            );
+                            }, POLL_INTERVAL);
                         });
                     },
                     downloadIcon
                 );
 
-                // Добавляем кнопки.
                 actions.appendChild(addButton);
                 actions.appendChild(playerButton);
                 actions.appendChild(deleteButton);
 
                 container.appendChild(actions);
-
-                // ====================================================
-                // ВАЖНОЕ НОВОВВЕДЕНИЕ:
-                // Восстанавливаем статус уже существующего торрента.
-                // Работает после перезагрузки списка и Lampa.
-                // ====================================================
-
-                if (hash) {
-                    restoreTorrentStatus(
-                        hash,
-                        addButton,
-                        item
-                    );
-                } else {
-                    var span = addButton.querySelector(
-                        '.qbit-btn-text'
-                    );
-
-                    if (span) {
-                        span.textContent = 'qB';
-                    }
-                }
 
             } catch (error) {
                 console.error(
@@ -2028,9 +1903,6 @@
                 'margin-top:-2px;' +
                 'line-height:1;' +
                 'color:#27ae60;' +
-                'white-space:nowrap;' +
-                'max-width:38px;' +
-                'text-align:center;' +
             '}' +
 
             '.qbit-direct-player svg {' +
@@ -2041,32 +1913,9 @@
                 'fill:#e74c3c;' +
             '}' +
 
-            // Загружается.
             '.qbit-loading {' +
-                'opacity:0.8;' +
-            '}' +
-
-            // Полностью загружен.
-            '.qbit-completed {' +
-                'opacity:1;' +
-            '}' +
-
-            '.qbit-completed.qbit-direct-add {' +
-                'width:38px;' +
-                'margin-left:-7px;' +
-                'margin-right:-7px;' +
-            '}' +
-
-            '.qbit-completed .qbit-btn-text {' +
-                'color:#27ae60;' +
-                'font-size:5px !important;' +
-                'font-weight:600;' +
-                'letter-spacing:-0.25px;' +
-                'line-height:1.1;' +
-                'max-width:38px;' +
-                'white-space:nowrap;' +
-                'transform:scaleX(0.96);' +
-                'transform-origin:center;' +
+                'opacity:0.7;' +
+                'pointer-events:none;' +
             '}' +
 
             '.qbit-empty-value {' +
@@ -2170,7 +2019,10 @@
                 cfg().smb_file || '(не задан)'
             );
 
-            log('Восстановление статусов включено');
+            log(
+                'SMB folder mode:',
+                cfg().smb_torrent_folder
+            );
 
             log('Плагин загружен');
 
