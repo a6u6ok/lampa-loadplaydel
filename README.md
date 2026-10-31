@@ -1,4 +1,4 @@
-# qBittorrent Direct Plugin for Lampa (Keenetic + Entware + SMB)
+# Плагин для скачки и просмотра qBittorrent в Lampa (Keenetic + Entware + SMB)
 
 Это модифицированный плагин для **Lampa**, который позволяет интегрировать ваш домашний торрент-клиент **qBittorrent** (запущенный, например, на роутере Keenetic через Entware) и запускать полностью скачанные видеофайлы напрямую через Lampa.
 
