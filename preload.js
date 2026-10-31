@@ -686,19 +686,19 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Отступ уменьшен с 50px до 16px
-                    '.torrent-item, .torrent-item__right { position: relative; overflow: visible !important; margin-left: 16px !important; }' +
+                    // Отступ увеличен до 32px для нормального размера кнопок
+                    '.torrent-item, .torrent-item__right { position: relative; overflow: visible !important; margin-left: 32px !important; }' +
                     
-                    // Контейнер кнопок вынесен влево на эти же 16px
-                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; position: absolute; left: -16px; top: 0; bottom: 0; z-index: 999; gap: 2px; }' +
+                    // Контейнер с кнопками выровнен по центру
+                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; position: absolute; left: -32px; top: 0; bottom: 0; z-index: 999; gap: 6px; }' +
                     
-                    // Размер кнопки уменьшен до 14px, чтобы влезть в узкий отступ
-                    '.qbit-direct-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 14px; height: 14px; background: none !important; border: none !important; border-radius: 0 !important; padding: 0; cursor: pointer; box-sizing: border-box; transition: transform 0.2s; }' +
-                    '.qbit-direct-btn.focus { transform: scale(1.2); outline: none; }' +
+                    // Размер кнопки 24px
+                    '.qbit-direct-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 24px; height: 24px; background: none !important; border: none !important; border-radius: 0 !important; padding: 0; cursor: pointer; box-sizing: border-box; transition: transform 0.2s; }' +
+                    '.qbit-direct-btn.focus { transform: scale(1.15); outline: none; }' +
                     
-                    // Иконки уменьшены
-                    '.qbit-direct-btn svg { width: 12px; height: 12px; fill: #27ae60; }' +
-                    '.qbit-btn-text { font-size: 6px; font-weight: bold; margin-top: -2px; line-height: 1; color: #27ae60; }' +
+                    // Иконки 20px
+                    '.qbit-direct-btn svg { width: 20px; height: 20px; fill: #27ae60; }' +
+                    '.qbit-btn-text { font-size: 8px; font-weight: bold; margin-top: -2px; line-height: 1; color: #27ae60; }' +
                     
                     // Цвета
                     '.qbit-direct-player svg { fill: #3498db; }' +
