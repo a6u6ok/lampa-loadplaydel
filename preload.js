@@ -600,10 +600,8 @@
 
             if (!item) return;
 
-            // Находим карточку
-            var container = item.querySelector('.torrent-item') || item.querySelector('.torrent-item__right') || item;
+            var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
             
-            // Предотвращаем дублирование
             if (container.querySelector('.qbit-direct-actions')) return;
 
             var magnet = data.MagnetUri || data.magnetUri || '';
@@ -671,23 +669,7 @@
             actions.appendChild(playerButton);
             actions.appendChild(deleteButton);
 
-            // Делаем карточку Flex-контейнером, кнопки ставим первыми (слева)
-            container.style.display = 'flex';
-            container.style.alignItems = 'center';
-            container.style.justifyContent = 'flex-start';
-            container.style.paddingLeft = '10px';
-            container.style.gap = '15px';
-
-            // Если внутри карточки есть обертка для текста, заставляем её занимать оставшееся место
-            var textWrapper = container.querySelector('.torrent-item__right') || container.querySelector('.torrent-item__title') || container;
-            if (textWrapper !== container) {
-                textWrapper.style.flex = '1';
-                textWrapper.style.minWidth = '0';
-            } else {
-                container.style.flexWrap = 'wrap';
-            }
-
-            container.insertBefore(actions, container.firstChild);
+            container.appendChild(actions);
         });
     }
 
@@ -704,18 +686,21 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Контейнер кнопок: вертикальный ряд, фиксированная ширина
-                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;flex-shrink:0;width:30px;}' +
+                    // Карточка должна вмещать отступ слева и не обрезать контент
+                    '.torrent-item, .torrent-item__right {position: relative; overflow: visible !important; padding-left: 45px !important; box-sizing: border-box !important;}' +
                     
-                    // Кнопки: без фона, без рамок, компактный размер
+                    // Контейнер кнопок выровнен по левому краю
+                    '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;left:5px;top:0;bottom:0;z-index:999;gap:4px;}' +
+                    
+                    // Компактные плоские кнопки
                     '.qbit-direct-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;width:30px;height:30px;background:none !important;border:none !important;border-radius:0 !important;padding:0;cursor:pointer;box-sizing:border-box;transition:transform 0.2s;}' +
                     '.qbit-direct-btn.focus{transform:scale(1.2);outline:none;}' +
                     
-                    // Иконки масштабируются под размер кнопки
+                    // Иконки
                     '.qbit-direct-btn svg{width:22px;height:22px;fill:#27ae60;}' +
-                    '.qbit-btn-text{font-size:9px;font-weight:bold;margin-top:-2px;line-height:1;color:#27ae60;}' +
+                    '.qbit-btn-text{font-size:9px;font-weight:bold;margin-top:-4px;line-height:1;color:#27ae60;}' +
                     
-                    // Цвета иконок
+                    // Разные цвета
                     '.qbit-direct-player svg { fill: #3498db; }' +
                     '.qbit-direct-delete svg { fill: #e74c3c; }' +
                     
