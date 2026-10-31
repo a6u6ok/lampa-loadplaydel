@@ -1,8 +1,8 @@
 // ============================================================================
 // Плагин qBittorrent для Lampa (Keenetic + Entware + SMB).
-// На основе kostya4000/lampa-qbit. Доработан для запуска видео по SMB.
+// На основе https://github.com/kostya4000/lampa-qbit. Доработан для запуска видео по SMB.
 //
-// ПЕРЕД ИСПОЛЬЗОВАНИЕМ ИСПРАВЬ ДВА ЗНАЧЕНИЯ НИЖЕ (помечены <<< ИЗМЕНИ).
+// ПЕРЕД ИСПОЛЬЗОВАНИЕМ ИСПРАВЬ ЗНАЧЕНИЯ НИЖЕ (помечены <<< ИЗМЕНИ).
 // ============================================================================
 
 (function () {
@@ -30,14 +30,14 @@
     var DEF_USER = '';                                   // логин Web UI (если есть)
     var DEF_PASS = '';                                   // пароль Web UI (если есть)
     var DEF_BYPASS = true;                               // true — без авторизации (локальная сеть)
-    var DEF_SAVEPATH = '/opt/download/download';         // <<< ИЗМЕНИ: реальный путь загрузок на роутере (см. df -h по SSH)
+    var DEF_SAVEPATH = '/opt/download';         // <<< ИЗМЕНИ: реальный путь загрузок на роутере qBittorrent (см. df -h по SSH)
     var DEF_CATEGORY = '';                               // категория qBittorrent, '' = без категории
     var DEF_RENAME = true;
     var DEF_CONFIRM = true;
     var DEF_AUTO_CAT_PATH = true;
     var DEF_DELETE_FILES = false;
     var DEF_PLAYER_PACKAGE = '';                         // выбери плеер в настройках Lampa
-    var DEF_SMB_FILE = 'smb://192.168.1.1/ABOBA/';       // <<< ИЗМЕНИ: имя шары как в Keenetic («Общий доступ»)
+    var DEF_SMB_FILE = 'smb://192.168.1.1/MEDIA/';       // <<< ИЗМЕНИ: имя шары как в Keenetic («Общий доступ»)
     var DEF_ALWAYS_SHOW_BUTTONS = false;
 
     var DEBUG = true;
@@ -557,8 +557,7 @@
         return path;
     }
 
-    // Если пришёл относительный путь торрента ("Name/file.mkv"),
-    // отрезаем первый сегмент, если он совпадает с именем торрента в пути SMB-корня.
+    // Собираем SMB-ссылку из пути файла.
     function makeSmbUri(fileName, torrentName) {
         var config = cfg();
 
@@ -572,8 +571,8 @@
         // 1) Пробуем отрезать абсолютные корни (savepath, savepath/категория).
         var stripped = stripLocalRoots(relative, config);
 
-        // 2) Если после этого остался ведущий сегмент = имя торрента и
-        //    SMB-корень уже указывает на папку торрента — отрезаем его.
+        // 2) Если остался ведущий сегмент = имя торрента и SMB-корень уже
+        //    указывает на папку торрента — отрезаем его.
         if (torrentName) {
             var torrentNameNorm = String(torrentName).replace(/\\/g, '/').replace(/\/+$/, '');
             if (torrentNameNorm &&
@@ -764,6 +763,9 @@
 
     // ================= НАЖАТИЯ =================
 
+    // jQuery-совместимая обработка нажатий: работает и с пульта
+    // (событие hover:enter Lampa пробрасывает через jQuery),
+    // и с обычным кликом мыши/тачпадом.
     function bindPress(element, handler) {
         var last = 0;
 
@@ -773,17 +775,22 @@
             last = now;
 
             if (event) {
-                event.preventDefault();
-                event.stopPropagation();
-                if (event.stopImmediatePropagation) {
+                if (typeof event.preventDefault === 'function') event.preventDefault();
+                if (typeof event.stopPropagation === 'function') event.stopPropagation();
+                if (typeof event.stopImmediatePropagation === 'function') {
                     event.stopImmediatePropagation();
                 }
             }
             handler(event);
         }
 
-        element.addEventListener('hover:enter', wrapped);
-        element.addEventListener('click', wrapped);
+        if (window.jQuery) {
+            window.jQuery(element).on('hover:enter', wrapped);
+            window.jQuery(element).on('click', wrapped);
+        } else {
+            element.addEventListener('hover:enter', wrapped);
+            element.addEventListener('click', wrapped);
+        }
     }
 
     // ================= НАСТРОЙКИ =================
