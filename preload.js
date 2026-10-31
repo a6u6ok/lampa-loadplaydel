@@ -1,8 +1,7 @@
 // ============================================================================
 // Плагин qBittorrent для Lampa (Keenetic + Entware + SMB).
 // На основе https://github.com/kostya4000/lampa-qbit. Доработан для запуска видео по SMB.
-// Настройки (адрес, путь, SMB) задаются через мастер при первом использовании
-// и хранятся в Lampa.Storage 
+// Настройки задаются через мастер при первом использовании и хранятся в Lampa.Storage. 
 // ============================================================================
 
 (function () {
@@ -26,11 +25,19 @@
 
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
     // Значения НЕ подставляются автоматически — только как подсказки
-    // в полях мастера при первой настройке.
+    // под полями мастера при первой настройке.
 
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
     var EXAMPLE_SAVEPATH = '/opt/download/download';
     var EXAMPLE_SMB_FILE = 'smb://192.168.1.1/MEDIA/';
+
+    var EMPTY_LABEL = 'Не заполнено';
+
+    // Заполняемые поля, для которых показываем «Не заполнено».
+    var SETTING_TEXT_FIELDS = [
+        'qbit_url', 'qbit_user', 'qbit_pass',
+        'qbit_savepath', 'qbit_category', 'qbit_smb_file'
+    ];
 
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
@@ -112,11 +119,10 @@
             confirm: isTrue(storeGet('qbit_confirm', true), true),
             auto_cat_path: isTrue(storeGet('qbit_auto_cat_path', true), true),
             delete_files: isTrue(storeGet('qbit_delete_files', false), false),
-            // Плеер больше не выбирается. Если он остался в хранилище
-            // со старой версии — используем его, иначе системный выбор.
+            // Плеер не выбирается. Если он остался в хранилище со старой
+            // версии — используем его, иначе системный выбор плеера.
             player_package: storeGet('qbit_player_package', ''),
-            smb_file: storeGet('qbit_smb_file', ''),
-            always_show_buttons: isTrue(storeGet('qbit_always_show_buttons', false), false)
+            smb_file: storeGet('qbit_smb_file', '')
         };
     }
 
@@ -208,11 +214,50 @@
         return (bytes / 1024).toFixed(1) + ' KB';
     }
 
+    // ================= «НЕ ЗАПОЛНЕНО» В НАСТРОЙКАХ =================
+
+    // Показываем серую надпись «Не заполнено» в полях настроек Lampa,
+    // пока значение в хранилище пустое. Само хранилище не трогаем:
+    // при редактировании поле открывается пустым, и случайная надпись
+    // не может сохраниться как значение.
+    function syncSettingPlaceholders() {
+        try {
+            // Пока открыт любой диалог/модалка — не трогаем DOM,
+            // чтобы не мешать вводу.
+            if (document.querySelector('.modal, .modal__content')) return;
+
+            SETTING_TEXT_FIELDS.forEach(function (name) {
+                var item = document.querySelector('[data-name="' + name + '"]');
+
+                if (!item) return;
+
+                var valueEl = item.querySelector('.value') ||
+                    item.querySelector('.setting__value');
+
+                if (!valueEl) return;
+
+                var stored = String(storeGet(name, ''));
+
+                if (stored) {
+                    if (valueEl.textContent !== stored) {
+                        valueEl.textContent = stored;
+                    }
+                    valueEl.classList.remove('qbit-empty-value');
+                } else if (valueEl.textContent !== EMPTY_LABEL) {
+                    valueEl.textContent = EMPTY_LABEL;
+                    valueEl.classList.add('qbit-empty-value');
+                }
+            });
+        } catch (error) {
+            // Тихо: это только визуальная подсказка.
+        }
+    }
+
     // ================= МАСТЕР ПЕРВОЙ НАСТРОЙКИ =================
 
     // Открывается при первом использовании, если основные поля пусты.
-    // Сохранённые значения (или введённые здесь) живут в Lampa.Storage
-    // и НЕ сбрасываются при обновлении скрипта.
+    // Сохранённые значения живут в Lampa.Storage и НЕ сбрасываются
+    // при обновлении скрипта.
     function openSetupWizard(onDone) {
         if (!window.Lampa || !Lampa.Modal) {
             notify('Настройте плагин в разделе Настройки → qBittorrent');
@@ -220,6 +265,20 @@
         }
 
         var config = cfg();
+
+        function escapeAttr(value) {
+            return String(value || '').replace(/"/g, '&quot;');
+        }
+
+        function fieldHtml(id, label, value, example) {
+            return '<div class="qbit-wizard__field">' +
+                '<label>' + label + '</label>' +
+                '<input type="text" id="' + id + '"' +
+                ' placeholder="' + (value ? '' : EMPTY_LABEL) + '"' +
+                ' value="' + escapeAttr(value) + '">' +
+                '<div class="qbit-wizard__hint">Пример: ' + example + '</div>' +
+                '</div>';
+        }
 
         var html = document.createElement('div');
         html.className = 'qbit-wizard';
@@ -229,21 +288,9 @@
                 'Укажите параметры qBittorrent. Они сохранятся в Lampa ' +
                 'и не будут сброшены при обновлении скрипта.' +
             '</div>' +
-            '<div class="qbit-wizard__field">' +
-                '<label>Адрес сервера</label>' +
-                '<input type="text" id="qbit-wz-url" placeholder="' + EXAMPLE_URL + '"' +
-                ' value="' + String(config.url || '').replace(/"/g, '&quot;') + '">' +
-            '</div>' +
-            '<div class="qbit-wizard__field">' +
-                '<label>Путь загрузок на роутере</label>' +
-                '<input type="text" id="qbit-wz-savepath" placeholder="' + EXAMPLE_SAVEPATH + '"' +
-                ' value="' + String(config.savepath || '').replace(/"/g, '&quot;') + '">' +
-            '</div>' +
-            '<div class="qbit-wizard__field">' +
-                '<label>SMB-шара</label>' +
-                '<input type="text" id="qbit-wz-smb" placeholder="' + EXAMPLE_SMB_FILE + '"' +
-                ' value="' + String(config.smb_file || '').replace(/"/g, '&quot;') + '">' +
-            '</div>' +
+            fieldHtml('qbit-wz-url', 'Адрес сервера', config.url, EXAMPLE_URL) +
+            fieldHtml('qbit-wz-savepath', 'Путь загрузок на роутере', config.savepath, EXAMPLE_SAVEPATH) +
+            fieldHtml('qbit-wz-smb', 'SMB-шара', config.smb_file, EXAMPLE_SMB_FILE) +
             '<div class="qbit-wizard__actions">' +
                 '<button class="qbit-wizard__btn qbit-wizard__save">Сохранить</button>' +
                 '<button class="qbit-wizard__btn qbit-wizard__cancel">Отмена</button>' +
@@ -848,13 +895,13 @@
                     .split('/')
                     .pop();
 
-                var smbUri = makeSmbUri(selectedFile.name, torrent.name);
-
                 if (!String(cfg().smb_file || '').trim()) {
                     notify('Не настроена SMB-шара');
                     openSetupWizard();
                     return;
                 }
+
+                var smbUri = makeSmbUri(selectedFile.name, torrent.name);
 
                 log('Выбран видеофайл:', selectedFile.name);
                 log('Размер:', formatSize(selectedFile.size));
@@ -913,8 +960,8 @@
                 name: 'qBittorrent'
             });
 
-            // Основные поля оставляем пустыми по умолчанию:
-            // значения хранятся в Lampa.Storage и переживают обновления.
+            // Значения хранятся в Lampa.Storage и переживают обновления.
+            // Пустые поля показывают «Не заполнено» (см. syncSettingPlaceholders).
             var params = [
                 ['qbit_url', 'input', '', 'Адрес сервера', 'Пример: ' + EXAMPLE_URL],
                 ['qbit_user', 'input', '', 'Логин', 'Логин Web UI'],
@@ -926,7 +973,6 @@
                 ['qbit_rename', 'trigger', true, 'Переименовывать торрент', ''],
                 ['qbit_confirm', 'trigger', true, 'Проверять добавление', ''],
                 ['qbit_delete_files', 'trigger', false, 'Удалять файлы торрента', ''],
-                ['qbit_always_show_buttons', 'trigger', false, 'Всегда показывать Плеер и Удалить', 'Не скрывать кнопки'],
                 ['qbit_smb_file', 'input', '', 'Корень SMB-папки загрузок', 'Пример: ' + EXAMPLE_SMB_FILE]
             ];
 
@@ -1017,9 +1063,6 @@
                 log('magnet:', magnet);
                 log('hash:', hash);
 
-                var config = cfg();
-                var alwaysShow = config.always_show_buttons;
-
                 var actions = document.createElement('div');
                 actions.className = 'qbit-direct-actions';
 
@@ -1049,12 +1092,7 @@
                     if (!requireSetup()) return;
 
                     if (!magnet) {
-                        notify('Не найдена magnet-ссылка');
-                        return;
-                    }
-
-                    if (alwaysShow) {
-                        qbAdd(magnet, title);
+                        notify('Не найдена magnet-ссылку');
                         return;
                     }
 
@@ -1079,8 +1117,6 @@
                                     if (progress >= 1) {
                                         clearInterval(pollTimer);
                                         addButton.style.display = 'none';
-                                        playerButton.style.display = 'flex';
-                                        deleteButton.style.display = 'flex';
                                         notify('Загрузка завершена!');
                                     } else {
                                         var span = addButton.querySelector('.qbit-btn-text');
@@ -1097,11 +1133,7 @@
                     });
                 }, downloadIcon);
 
-                if (!alwaysShow) {
-                    playerButton.style.display = 'none';
-                    deleteButton.style.display = 'none';
-                }
-
+                // Плеер и Удалить всегда видимы и активны.
                 actions.appendChild(addButton);
                 actions.appendChild(playerButton);
                 actions.appendChild(deleteButton);
@@ -1183,6 +1215,12 @@
                 'pointer-events:none;' +
             '}' +
 
+            // «Не заполнено» в настройках — приглушённым цветом.
+            '.qbit-empty-value {' +
+                'opacity:0.5 !important;' +
+                'font-style:italic;' +
+            '}' +
+
             '.qbit-wizard { padding:20px; }' +
 
             '.qbit-wizard__desc {' +
@@ -1209,6 +1247,12 @@
                 'border:1px solid rgba(255,255,255,0.2);' +
                 'background:rgba(255,255,255,0.08);' +
                 'color:inherit;' +
+            '}' +
+
+            '.qbit-wizard__hint {' +
+                'font-size:11px;' +
+                'margin-top:4px;' +
+                'opacity:0.5;' +
             '}' +
 
             '.qbit-wizard__actions {' +
@@ -1247,12 +1291,13 @@
             initTorrentButton();
             addStyles();
 
+            // Обновляем надписи «Не заполнено» в настройках.
+            syncSettingPlaceholders();
+            setInterval(syncSettingPlaceholders, 1500);
+
             log('Путь загрузки:', cfg().savepath || '(не задан)');
             log('SMB:', cfg().smb_file || '(не задан)');
             log('Плагин загружен');
-
-            // Если основные поля уже заполнены — мастер не показываем.
-            // Иначе мастер откроется при первом нажатии на любую кнопку плагина.
         } catch (error) {
             console.error('[qBittorrent] Initialization error:', error);
         }
