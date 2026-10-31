@@ -7,22 +7,33 @@
 (function () {
     'use strict';
 
-    // Глобальный перехват ошибок — чтобы страница не падала.
+   // Флаг для включения/отключения логирования ошибок
+    var errorLoggingEnabled = false;
+
+    // Функция для логирования ошибок с учетом настроек
+    function logError(event) {
+        if (errorLoggingEnabled) {
+            try {
+                console.error('[qBittorrent] SCRIPT ERROR:', event.message,
+                    'строка:', event.lineno, event.error);
+                if (window.Lampa && Lampa.Noty) {
+                    Lampa.Noty.show('qBittorrent: ' + event.message +
+                        ' (строка ' + event.lineno + ')');
+                }
+            } catch (e) {}
+        }
+    }
+
+    // Обработчик ошибок
     window.addEventListener('error', function (event) {
-        try {
-            console.error('[qBittorrent] SCRIPT ERROR:', event.message,
-                'строка:', event.lineno, event.error);
-            if (window.Lampa && Lampa.Noty) {
-                Lampa.Noty.show('qBittorrent: ' + event.message +
-                    ' (строка ' + event.lineno + ')');
-            }
-        } catch (e) {}
+        logError(event);
     });
 
     window.addEventListener('unhandledrejection', function (event) {
-        console.error('[qBittorrent] PROMISE ERROR:', event.reason);
+        if (errorLoggingEnabled) {
+            console.error('[qBittorrent] PROMISE ERROR:', event.reason);
+        }
     });
-
     // ================= ПРИМЕРЫ ДЛЯ МАСТЕРА НАСТРОЙКИ =================
   
     var EXAMPLE_URL = 'http://192.168.1.1:9080';
