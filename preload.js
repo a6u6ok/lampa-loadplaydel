@@ -1308,8 +1308,8 @@
 
         log('Запуск видео:', playerData);
 
-        // Внешний плеер: Android Intent. Не вызываем AndroidJS.openPlayer
-        // или AndroidJS.startActivity — в ряде сборок Lampa таких методов нет.
+        // Внешний плеер: Android Intent URI с extras из официального API Vimu.
+        // Нативные методы AndroidJS не вызываем: их наличие зависит от сборки Lampa.
         // Если внешний плеер выбран, не передаём тот же файл во встроенный плеер.
         if (pkg) {
             if (!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(pkg)) {
@@ -1324,21 +1324,48 @@
                 return;
             }
 
-            // Android Intent URI: исходная схема (smb/http/https) задаётся
-            // отдельно, а package ограничивает выбор указанным приложением.
+            // Vimu Player API: передаём имя контента и включаем resume
+            // через Intent extras. В URI-синтаксисе Android:
+            // S.<key> — String extra, B.<key> — Boolean extra.
+            // Для MKV задаём точный MIME, для остальных форматов — по расширению.
             var schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(uri);
             var scheme = schemeMatch ? schemeMatch[1].toLowerCase() : 'smb';
             var intentTarget = uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+            var mimeByExtension = {
+                mkv: 'video/x-matroska',
+                mp4: 'video/mp4',
+                m4v: 'video/mp4',
+                avi: 'video/x-msvideo',
+                mov: 'video/quicktime',
+                webm: 'video/webm',
+                ts: 'video/mp2t',
+                m2ts: 'video/mp2t',
+                mpg: 'video/mpeg',
+                mpeg: 'video/mpeg',
+                wmv: 'video/x-ms-wmv',
+                flv: 'video/x-flv',
+                ogv: 'video/ogg',
+                '3gp': 'video/3gpp'
+            };
+            var fileExtMatch = /\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
+            var fileExt = fileExtMatch ? fileExtMatch[1].toLowerCase() : '';
+            var mimeType = mimeByExtension[fileExt] || 'video/*';
+            var contentTitle = String(title || uri.split('/').pop() || 'qBittorrent');
             var intentUri = 'intent://' + intentTarget +
                 '#Intent;scheme=' + scheme +
                 ';action=android.intent.action.VIEW' +
-                ';type=video%2F*' +
+                ';type=' + encodeURIComponent(mimeType) +
+                ';S.forcename=' + encodeURIComponent(contentTitle) +
+                ';B.forceresume=true' +
                 ';package=' + pkg +
                 ';end';
 
-            log('Запуск внешнего плеера через Android Intent:', {
+            log('Запуск Vimu через Android Intent API:', {
                 package: pkg,
                 uri: uri,
+                mime: mimeType,
+                forcename: contentTitle,
+                forceresume: true,
                 intent: intentUri
             });
 
@@ -1610,7 +1637,7 @@
                 ['qbit_confirm', 'trigger', true, 'Проверять добавление', ''],
                 ['qbit_delete_files', 'trigger', false, 'Удалять файлы торрента', ''],
                 ['qbit_smb_file', 'input', '', 'Корень SMB-папки загрузок', 'Пример: ' + EXAMPLE_SMB_FILE],
-                ['qbit_player_package', 'input', '', 'Пакет внешнего плеера Android', 'Например: top.rootu.ddplayer (пусто — встроенный плеер Lampa)'],
+                ['qbit_player_package', 'input', '', 'Пакет внешнего плеера Android', 'Для Vimu: net.gtvbox.videoplayer (пусто — встроенный плеер Lampa)'],
                 [
                     'qbit_smb_torrent_folder',
                     'trigger',
