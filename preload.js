@@ -1032,66 +1032,149 @@
         return path.replace(/^\/+/, '');
     }
 
-    // Главная исправленная функция.
-    //
-    // qBittorrent может создавать:
-    //
-    // /torrents/Название торрента/film.mkv
-    //
-    // или:
-    //
-    // /torrents/Название торрента/BDMV/movie.mkv
-    //
-    // Имя дополнительной папки сохраняется.
-    //
-    // Удаляется оно только тогда, когда включён
-    // параметр qbit_smb_torrent_folder.
+    // Приводит файловый путь к единому виду: прямые слэши,
+    // без двойных слэшей, без завершающего слэша.
+    function cleanFsPath(path) {
+        return String(path || '')
+            .replace(/\\/g, '/')
+            .replace(/\/+/g, '/')
+            .replace(/\/+$/, '');
+    }
 
-    function makeSmbUri(fileName, torrentName) {
+    // Возвращает path относительно base (без ведущих слэшей).
+    // Если path не лежит внутри base — возвращает ''.
+    function relativeFsPath(basePath, path) {
+        basePath = cleanFsPath(basePath);
+        path = cleanFsPath(path);
+
+        if (!path) return '';
+
+        if (!basePath) {
+            return path.replace(/^\/+/, '');
+        }
+
+        if (path === basePath) return '';
+
+        if (path.indexOf(basePath + '/') === 0) {
+            return path.substring(basePath.length + 1);
+        }
+
+        return '';
+    }
+
+    // ========================================================================
+    // SMB — ФОРМИРОВАНИЕ URI (новая версия makeSmbUri)
+    // ========================================================================
+
+    function makeSmbUri(fileName, torrent) {
         var config = cfg();
+        torrent = torrent || {};
 
         var smbRoot = String(config.smb_file || '')
             .trim()
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
-        var relative = String(fileName || '')
-            .replace(/\\/g, '/');
+        var file = cleanFsPath(fileName).replace(/^\/+/, '');
+        var configuredSave = cleanFsPath(config.savepath);
+        var torrentSave = cleanFsPath(
+            torrent.save_path || configuredSave
+        );
+        var contentPath = cleanFsPath(torrent.content_path || '');
 
-        // Убираем локальный корень загрузок, если он присутствует.
-        relative = stripLocalRoots(relative, config);
+        // Путь категории относительно общей папки загрузок.
+        var relativeBase = relativeFsPath(
+            configuredSave,
+            torrentSave
+        );
 
-        // Убираем имя торрента ТОЛЬКО по настройке.
-        if (config.smb_torrent_folder && torrentName) {
-            var folder = String(torrentName)
-                .replace(/\\/g, '/')
-                .replace(/\/+$/, '');
+        // Путь папки торрента относительно save_path.
+        var contentRelative = '';
 
-            if (
-                folder &&
-                relative.indexOf(folder + '/') === 0
-            ) {
-                relative = relative.substring(
-                    folder.length + 1
+        if (contentPath && torrentSave) {
+            var contentLeaf = contentPath.split('/').pop();
+            var fileLeaf = file.split('/').pop();
+
+            // Для одиночного файла content_path указывает на сам файл,
+            // а не на папку. В этом случае папку торрента добавлять нельзя.
+            var contentIsSingleFile = contentLeaf === fileLeaf;
+
+            if (!contentIsSingleFile) {
+                contentRelative = relativeFsPath(
+                    torrentSave,
+                    contentPath
                 );
             }
         }
 
-        var encoded = encodeSmbPath(relative);
+        // Если API вернул абсолютный путь к файлу,
+        // преобразуем его относительно общей папки загрузок.
+        if (/^(?:[A-Za-z]:\/|\/)/.test(file)) {
+            var absoluteRelative = relativeFsPath(
+                configuredSave,
+                file
+            );
+
+            if (!absoluteRelative) {
+                absoluteRelative = relativeFsPath(
+                    torrentSave,
+                    file
+                );
+
+                if (absoluteRelative) {
+                    absoluteRelative = [
+                        relativeBase,
+                        absoluteRelative
+                    ].filter(Boolean).join('/');
+                }
+            }
+
+            if (absoluteRelative) {
+                file = absoluteRelative;
+            } else {
+                file = stripLocalRoots(file, config);
+            }
+
+            // Абсолютный путь уже содержит расположение файла.
+            relativeBase = '';
+            contentRelative = '';
+        } else {
+            // Если API уже включил папку торрента в file.name,
+            // повторно её не добавляем.
+            if (
+                contentRelative &&
+                file.indexOf(contentRelative + '/') !== 0 &&
+                file !== contentRelative
+            ) {
+                file = contentRelative + '/' + file;
+            }
+
+            // Добавляем категорию, если она есть.
+            if (
+                relativeBase &&
+                file.indexOf(relativeBase + '/') !== 0 &&
+                file !== relativeBase
+            ) {
+                file = relativeBase + '/' + file;
+            }
+        }
+
+        file = cleanFsPath(file).replace(/^\/+/, '');
 
         var result = smbRoot +
-            (encoded ? '/' + encoded : '');
+            (file ? '/' + encodeSmbPath(file) : '');
 
         log('SMB root:', smbRoot);
-        log('Torrent name:', torrentName);
-        log('File name:', fileName);
-        log('Relative path:', relative);
-        log('Final SMB URI:', result);
+        log('Torrent:', torrent.name || '');
+        log('Save path:', torrentSave);
+        log('Content path:', contentPath);
+        log('File from API:', fileName);
+        log('SMB relative path:', file);
+        log('SMB URI:', result);
 
         return result;
     }
-
-    // ========================================================================
+        // ========================================================================
     // ЗАПУСК ВИДЕО В LAMPA
     // ========================================================================
 
@@ -1337,7 +1420,7 @@
 
                 var smbUri = makeSmbUri(
                     selectedFile.name,
-                    torrent.name
+                    torrent
                 );
 
                 log('Выбран файл:', selectedFile.name);
