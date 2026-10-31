@@ -1309,7 +1309,57 @@
 
         log('Запуск видео:', playerData);
 
-        // 1. Встроенный плеер Lampa.
+        // Если пользователь выбрал внешний плеер, сначала передаём файл ему.
+        // Раньше Lampa.Player.play() вызывался первым и перехватывал запуск,
+        // поэтому выбранный Vimu мог вообще не получать исходный SMB URI.
+        if (pkg) {
+            try {
+                if (
+                    window.AndroidJS &&
+                    typeof window.AndroidJS.openPlayer === 'function'
+                ) {
+                    log('Запуск внешнего плеера:', pkg, uri);
+                    window.AndroidJS.openPlayer(
+                        uri,
+                        pkg,
+                        title || '',
+                        'video/*'
+                    );
+                    log('Команда передана AndroidJS.openPlayer');
+                    return;
+                }
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] AndroidJS.openPlayer error:',
+                    error
+                );
+            }
+
+            // Резервный запуск через Android Intent с выбранным package.
+            try {
+                if (
+                    window.AndroidJS &&
+                    typeof window.AndroidJS.startActivity === 'function'
+                ) {
+                    var intent = {
+                        action: 'android.intent.action.VIEW',
+                        data: uri,
+                        type: 'video/*',
+                        package: pkg
+                    };
+                    log('Запуск через Android Intent:', intent);
+                    window.AndroidJS.startActivity(JSON.stringify(intent));
+                    return;
+                }
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] Android Intent error:',
+                    error
+                );
+            }
+        }
+
+        // Если внешний плеер не выбран, используем встроенный Lampa Player.
         try {
             if (
                 window.Lampa &&
@@ -1317,9 +1367,7 @@
                 typeof Lampa.Player.play === 'function'
             ) {
                 Lampa.Player.play(playerData);
-
                 log('Видео передано Lampa.Player');
-
                 return;
             }
         } catch (error) {
@@ -1329,7 +1377,7 @@
             );
         }
 
-        // 2. AndroidJS.
+        // Последняя попытка — AndroidJS без привязки к конкретному приложению.
         try {
             if (
                 window.AndroidJS &&
@@ -1337,45 +1385,15 @@
             ) {
                 window.AndroidJS.openPlayer(
                     uri,
-                    pkg,
+                    '',
                     title || '',
                     'video/*'
                 );
-
                 return;
             }
         } catch (error) {
             console.error(
-                '[qBittorrent] AndroidJS error:',
-                error
-            );
-        }
-
-        // 3. Android Intent.
-        try {
-            if (
-                window.AndroidJS &&
-                typeof window.AndroidJS.startActivity === 'function'
-            ) {
-                var intent = {
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: 'video/*'
-                };
-
-                if (pkg) {
-                    intent.package = pkg;
-                }
-
-                window.AndroidJS.startActivity(
-                    JSON.stringify(intent)
-                );
-
-                return;
-            }
-        } catch (error) {
-            console.error(
-                '[qBittorrent] Intent error:',
+                '[qBittorrent] AndroidJS fallback error:',
                 error
             );
         }
