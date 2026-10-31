@@ -1,4 +1,6 @@
 
+
+```javascript
 // ============================================================================
 // Плагин qBittorrent для Lampa.
 // На основе плагина kostya4000/lampa-qbit
@@ -27,6 +29,10 @@
     var DEBUG = true;
     var ACTION_LOCK_MS = 800;
     var POLL_INTERVAL = 3000;
+
+    // Счётчик запросов AndroidJS.
+    // Каждый запрос должен иметь собственный ID.
+    var nativeRequestId = 0;
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -135,12 +141,10 @@
     function magnetHash(magnet) {
         var value = String(magnet || '');
 
-        // Обычный magnet URI.
         var match = /urn:btih:([a-zA-Z0-9]+)/i.exec(value);
 
         if (match) return match[1].toLowerCase();
 
-        // Если передан непосредственно хеш.
         value = value.trim();
 
         if (/^[a-f0-9]{40}$/i.test(value)) {
@@ -150,7 +154,6 @@
         return '';
     }
 
-    // Получение magnet URI из разных вариантов структуры Lampa.
     function extractMagnet(data) {
         if (!data) return '';
 
@@ -177,7 +180,6 @@
         return '';
     }
 
-    // Более надёжное получение хеша из объекта торрента.
     function extractTorrentHash(data, depth) {
         depth = depth || 0;
 
@@ -302,68 +304,88 @@
         return String(response);
     }
 
+    // Исправленный AndroidJS HTTP bridge.
+    //
+    // Правильный формат Lampa AndroidJS:
+    // AndroidJS.httpReq(JSON.stringify(payload), requestId)
+    // AndroidJS.getResp(String(requestId))
+    //
+    // GET:
+    // { url: "...", timeout: 20000, headers: {} }
+    //
+    // POST:
+    // { url: "...", timeout: 20000, headers: {}, post_data: "..." }
+
     function nativeRequest(request, callback) {
         var responded = false;
+        var requestId = ++nativeRequestId;
+
+        var payload = {
+            url: request.url,
+            timeout: 20000,
+            headers: request.headers || {}
+        };
+
+        if (request.body !== undefined &&
+            request.body !== null &&
+            request.body !== '') {
+            payload.post_data = String(request.body);
+        }
 
         function finish(response) {
             if (responded) return;
 
+            responded = true;
+
             var normalized = normalizeResponse(response);
 
-            // Пустой ответ считаем неудачным и пробуем fetch.
-            if (normalized === null || normalized.length === 0) {
-                if (!responded) {
-                    responded = true;
-
-                    log('AndroidJS не вернул ответ. Пробую fetch.');
-
-                    fetchRequest(request, callback);
-                }
-
-                return;
-            }
-
-            responded = true;
             callback(normalized);
         }
 
-        if (!window.AndroidJS ||
-            typeof AndroidJS.httpReq !== 'function') {
+        function fallback() {
+            if (responded) return;
 
-            log('AndroidJS.httpReq недоступен. Использую fetch.');
+            responded = true;
+
+            log('AndroidJS не вернул ответ. Переключаюсь на fetch.');
+
+            fetchRequest(request, callback);
+        }
+
+        if (!window.AndroidJS ||
+            typeof AndroidJS.httpReq !== 'function' ||
+            typeof AndroidJS.getResp !== 'function') {
+
+            log('AndroidJS HTTP недоступен. Использую fetch.');
+
             fetchRequest(request, callback);
             return;
         }
 
         try {
-            // Очищаем старый ответ.
-            AndroidJS.getResp();
-        } catch (error) {}
+            log(
+                'Native HTTP:',
+                request.method || 'GET',
+                payload.url,
+                'ID:',
+                requestId
+            );
 
-        try {
-            log('HTTP:', request.method || 'GET', request.url);
+            // Второй аргумент — обязательный ID запроса.
+            AndroidJS.httpReq(
+                JSON.stringify(payload),
+                requestId
+            );
 
-            AndroidJS.httpReq(JSON.stringify(request));
+        } catch (error) {
+            console.error('[qBittorrent] AndroidJS httpReq error:', error);
 
-        } catch (e) {
-            try {
-                AndroidJS.httpReq(
-                    request.url,
-                    JSON.stringify({
-                        method: request.method || 'GET',
-                        body: request.body || '',
-                        headers: request.headers || {}
-                    })
-                );
-            } catch (e2) {
-                log('Ошибка AndroidJS.httpReq:', e2);
-                fetchRequest(request, callback);
-                return;
-            }
+            fetchRequest(request, callback);
+            return;
         }
 
         var tries = 0;
-        var maxTries = 30;
+        var maxTries = 150;
 
         (function poll() {
             if (responded) return;
@@ -373,25 +395,33 @@
             var response = null;
 
             try {
-                response = AndroidJS.getResp();
-            } catch (error) {}
+                // Получаем ответ именно по ID текущего запроса.
+                response = AndroidJS.getResp(String(requestId));
+            } catch (error) {
+                console.error('[qBittorrent] AndroidJS getResp error:', error);
+            }
 
-            var normalized = normalizeResponse(response);
+            if (response !== null && response !== undefined) {
+                var normalized = normalizeResponse(response);
 
-            if (normalized !== null && normalized.length > 0) {
-                finish(normalized);
-                return;
+                if (normalized !== null && normalized.length > 0) {
+                    log(
+                        'Native HTTP response:',
+                        normalized.substring(0, 300)
+                    );
+
+                    finish(normalized);
+                    return;
+                }
             }
 
             if (tries >= maxTries) {
-                if (!responded) {
-                    responded = true;
+                log(
+                    'Таймаут AndroidJS. ID:',
+                    requestId
+                );
 
-                    log('Таймаут AndroidJS. Пробую fetch.');
-
-                    fetchRequest(request, callback);
-                }
-
+                fallback();
                 return;
             }
 
@@ -617,9 +647,8 @@
             relativePath = relativePath.substring(savePath.length + 1);
         }
 
-        // В данном случае SMB-корень уже соответствует
-        // /opt/download/download, поэтому имя каталога
-        // download повторно добавлять не нужно.
+        // SMB-корень уже соответствует /opt/download/download.
+        // Каталог download повторно не добавляем.
 
         var result = smbRoot + '/' + encodeSmbPath(relativePath);
 
@@ -663,8 +692,8 @@
 
                 return;
             }
-        } catch (e) {
-            console.error('[qBittorrent] Lampa.Android error:', e);
+        } catch (error) {
+            console.error('[qBittorrent] Lampa.Android error:', error);
         }
 
         try {
@@ -674,8 +703,8 @@
                 AndroidJS.openPlayer(uri, pkg, title || '', 'video/*');
                 return;
             }
-        } catch (e) {
-            console.error('[qBittorrent] AndroidJS error:', e);
+        } catch (error) {
+            console.error('[qBittorrent] AndroidJS error:', error);
         }
 
         try {
@@ -691,8 +720,8 @@
 
                 return;
             }
-        } catch (e) {
-            console.error('[qBittorrent] startActivity error:', e);
+        } catch (error) {
+            console.error('[qBittorrent] startActivity error:', error);
         }
 
         try {
@@ -706,8 +735,8 @@
 
                 return;
             }
-        } catch (e) {
-            console.error('[qBittorrent] Android error:', e);
+        } catch (error) {
+            console.error('[qBittorrent] Android error:', error);
         }
 
         notify('Не удалось запустить видеоплеер');
@@ -1010,7 +1039,6 @@
 
             if (container.querySelector('.qbit-direct-actions')) return;
 
-            // Получаем magnet и хеш из разных возможных полей.
             var magnet = extractMagnet(data);
 
             if (!magnet) {
@@ -1115,8 +1143,6 @@
                 'qbit-direct-player',
                 '',
                 function () {
-                    // Повторно извлекаем хеш при нажатии,
-                    // если он не был найден при создании кнопки.
                     var currentHash = hash ||
                         extractTorrentHash(data) ||
                         extractTorrentHash(event) ||
@@ -1268,3 +1294,5 @@
     }
 
 })();
+```
+
