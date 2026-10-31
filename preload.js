@@ -9,6 +9,36 @@
 
 (function () {
     'use strict';
+    // Перехват ошибок JavaScript плагина
+window.addEventListener('error', function (event) {
+    console.error(
+        '[qBittorrent] SCRIPT ERROR:',
+        event.message,
+        'Файл:',
+        event.filename,
+        'Строка:',
+        event.lineno,
+        'Столбец:',
+        event.colno,
+        event.error
+    );
+
+    try {
+        if (window.Lampa && Lampa.Noty) {
+            Lampa.Noty.show(
+                'qBittorrent: ' + event.message +
+                ' (строка ' + event.lineno + ')'
+            );
+        }
+    } catch (e) {}
+});
+
+window.addEventListener('unhandledrejection', function (event) {
+    console.error(
+        '[qBittorrent] PROMISE ERROR:',
+        event.reason
+    );
+});
 
     // ================= ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ =================
 
