@@ -686,21 +686,21 @@
                 var style = document.createElement('style');
                 style.id = 'qbit-direct-style';
                 style.textContent =
-                    // Отступ увеличен до 32px для нормального размера кнопок
-                    '.torrent-item, .torrent-item__right { position: relative; overflow: visible !important; margin-left: 32px !important; }' +
+                    // Сдвигаем карточку ВЛЕВО (чтобы освободить место справа)
+                    '.torrent-item, .torrent-item__right { position: relative; overflow: visible !important; margin-right: 32px !important; }' +
                     
-                    // Контейнер с кнопками выровнен по центру
-                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; position: absolute; left: -32px; top: 0; bottom: 0; z-index: 999; gap: 6px; }' +
+                    // Прижимаем контейнер с кнопками к правому краю карточки
+                    '.qbit-direct-actions { display: flex; flex-direction: column; justify-content: center; align-items: center; position: absolute; right: -32px; top: 0; bottom: 0; z-index: 999; gap: 6px; }' +
                     
-                    // Размер кнопки 24px
+                    // Компактные кнопки (24x24)
                     '.qbit-direct-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 24px; height: 24px; background: none !important; border: none !important; border-radius: 0 !important; padding: 0; cursor: pointer; box-sizing: border-box; transition: transform 0.2s; }' +
                     '.qbit-direct-btn.focus { transform: scale(1.15); outline: none; }' +
                     
-                    // Иконки 20px
+                    // Иконки 20x20
                     '.qbit-direct-btn svg { width: 20px; height: 20px; fill: #27ae60; }' +
                     '.qbit-btn-text { font-size: 8px; font-weight: bold; margin-top: -2px; line-height: 1; color: #27ae60; }' +
                     
-                    // Цвета
+                    // Цвета иконок
                     '.qbit-direct-player svg { fill: #3498db; }' +
                     '.qbit-direct-delete svg { fill: #e74c3c; }' +
                     
