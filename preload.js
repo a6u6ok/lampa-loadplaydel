@@ -1013,11 +1013,13 @@
 
         log('Восстанавливаю статус:', hash);
 
-        // Пока ждём ответ сервера.
+        // До подтверждения наличия торрента оставляем исходную надпись qB.
+        // Процент или «Загружено» появятся только после ответа qBittorrent.
         var span = button.querySelector('.qbit-btn-text');
 
-        if (span) {
-            span.textContent = '...';
+        if (span && !button.classList.contains('qbit-loading') &&
+            !button.classList.contains('qbit-completed')) {
+            span.textContent = 'qB';
         }
 
         // Первичная проверка сразу после появления карточки.
@@ -1721,7 +1723,7 @@
 
                 var addButton = createButton(
                     'qbit-direct-add',
-                    '...',
+                    'qB',
                     function () {
                         if (!requireSetup()) return;
 
@@ -1875,6 +1877,8 @@
                 'line-height:1;' +
                 'color:#27ae60;' +
                 'white-space:nowrap;' +
+                'max-width:38px;' +
+                'text-align:center;' +
             '}' +
 
             '.qbit-direct-player svg {' +
@@ -1895,9 +1899,22 @@
                 'opacity:1;' +
             '}' +
 
+            '.qbit-completed.qbit-direct-add {' +
+                'width:38px;' +
+                'margin-left:-7px;' +
+                'margin-right:-7px;' +
+            '}' +
+
             '.qbit-completed .qbit-btn-text {' +
                 'color:#27ae60;' +
-                'font-size:8px;' +
+                'font-size:5px !important;' +
+                'font-weight:600;' +
+                'letter-spacing:-0.25px;' +
+                'line-height:1.1;' +
+                'max-width:38px;' +
+                'white-space:nowrap;' +
+                'transform:scaleX(0.96);' +
+                'transform-origin:center;' +
             '}' +
 
             '.qbit-empty-value {' +
@@ -1981,7 +1998,6 @@
             addMenuItem();
 
             initTorrentButton();
-
             addStyles();
 
             syncSettingPlaceholders();
