@@ -1342,7 +1342,7 @@
                 '<div class="qbit-files__torrent">' + escapeHtml(torrentName) + '</div>' +
                 '<div class="qbit-files__summary">Видео: ' + videoFiles.length +
                 ' · Загружено: ' + completed + '</div>' +
-                '<div class="qbit-files__hint">Выберите серию для воспроизведения</div>' +
+                '<div class="qbit-files__hint">Выберите файл для воспроизведения</div>' +
             '</div>';
         var list = '<div class="qbit-files__list">';
 
