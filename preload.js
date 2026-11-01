@@ -847,11 +847,16 @@
                     return;
                 }
 
-                if (/Forbidden|403|Fails|Errored/i.test(response)) {
+                // Если ответ содержит Forbidden или 403 - это критическая ошибка
+                if (/Forbidden|403|Errored/i.test(response)) {
                     notify('Ошибка добавления: ' + response);
                     if (onComplete) onComplete(false);
                     return;
                 }
+
+                // Если qBittorrent вернул "Fails." - часто это означает, 
+                // что торрент уже добавлен, либо метаданные еще грузятся. 
+                // Не считаем это критической ошибкой, идем дальше проверять.
 
                 var hash = magnetHash(magnet);
 
@@ -1002,7 +1007,7 @@
 
         notify('Не удалось запустить плеер Lampa');
     }
-    // ========================================================================
+        // ========================================================================
     // ИНФОРМАЦИЯ О СЕРИЯХ
     // ========================================================================
 
@@ -1382,7 +1387,7 @@
 
         var torrentName = torrent.name || 'Торрент';
 
-               var header =
+        var header =
             '<div class="qbit-files__header">' +
                 '<div class="qbit-files__torrent">' +
                     escapeHtml(torrentName) +
@@ -1803,9 +1808,7 @@
                         .split('/')
                         .pop();
 
-                    var smbUri = makeSmbUri(
-                        selectedFile.name,
-                    );
+                    var smbUri = makeSmbUri(selectedFile.name);
 
                     log('Выбрана серия:', selectedFile.name);
                     log('Размер:', formatSize(selectedFile.size));
@@ -2003,7 +2006,7 @@
             );
         });
     }
-        // ========================================================================
+    // ========================================================================
     // РЕГИСТРАЦИЯ НАСТРОЕК
     // ========================================================================
 
@@ -2297,11 +2300,9 @@
                             addButton.dataset.qbitAdding = '0';
 
                             if (!success) {
-                                applyProgressToButton(
-                                    addButton,
-                                    null,
-                                    downloadIcon
-                                );
+                                // Если добавление не удалось (критическая ошибка), 
+                                // принудительно сбрасываем кнопку обратно на "qB"
+                                resetButtonToQb(addButton, downloadIcon);
                                 return;
                             }
 
@@ -2762,5 +2763,4 @@
         }, 5000);
     }
 
-})();
-    
+})();    
