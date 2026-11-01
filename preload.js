@@ -1,6 +1,7 @@
 // ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
+// Исправленная версия
 // ============================================================================
 
 (function () {
@@ -23,6 +24,11 @@
     var nativeRequestId = 0;
     var sid = '';
     var loggedIn = false;
+
+    // Контроль текущего окна файлов, чтобы ответы старых запросов
+    // не открывали лишние модальные окна.
+    var activeFileModalHash = '';
+    var fileModalRequestId = 0;
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -374,6 +380,11 @@
             return;
         }
 
+        if (!window.jQuery) {
+            notify('Не удалось открыть настройки: jQuery недоступен');
+            return;
+        }
+
         var config = cfg();
 
         function fieldHtml(id, label, value, example) {
@@ -423,11 +434,8 @@
                     'Отмена' +
                 '</button>' +
             '</div>';
-if (!window.jQuery) {
-    notify('Не удалось открыть настройки: jQuery недоступен');
-    return;
-}
-              Lampa.Modal.open({
+
+        Lampa.Modal.open({
             title: 'qBittorrent — настройка',
             html: window.jQuery(html),
             size: 'medium',
@@ -443,55 +451,48 @@ if (!window.jQuery) {
             } catch (error) {}
         }
 
-        var cancelButton = html.querySelector(
-            '.qbit-wizard__cancel'
+        window.jQuery(html).find('.qbit-wizard__cancel').on(
+            'hover:enter click',
+            close
         );
 
-        var saveButton = html.querySelector(
-            '.qbit-wizard__save'
-        );
-
-        if (window.jQuery && cancelButton) {
-            window.jQuery(cancelButton).on(
-                'hover:enter click',
-                close
-            );
-        }
-
-        if (window.jQuery && saveButton) {
-            window.jQuery(saveButton).on(
-                'hover:enter click',
-                function () {
-                    var url = html.querySelector(
-                        '#qbit-wz-url'
-                    ).value.trim();
-
-                    var savepath = html.querySelector(
-                        '#qbit-wz-savepath'
-                    ).value.trim();
-
-                    var smb = html.querySelector(
-                        '#qbit-wz-smb'
-                    ).value.trim();
-
-                    if (!url || !savepath || !smb) {
-                        notify('Заполните все три поля');
-                        return;
-                    }
-
-                    storeSet('qbit_url', url);
-                    storeSet('qbit_savepath', savepath);
-                    storeSet('qbit_smb_file', smb);
-
-                    close();
-                    notify('Настройки сохранены');
-
-                    if (typeof onDone === 'function') {
-                        onDone();
-                    }
+        window.jQuery(html).find('.qbit-wizard__save').on(
+            'hover:enter click',
+            function (event) {
+                if (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
                 }
-            );
-        }
+
+                var url = html.querySelector(
+                    '#qbit-wz-url'
+                ).value.trim();
+
+                var savepath = html.querySelector(
+                    '#qbit-wz-savepath'
+                ).value.trim();
+
+                var smb = html.querySelector(
+                    '#qbit-wz-smb'
+                ).value.trim();
+
+                if (!url || !savepath || !smb) {
+                    notify('Заполните все три поля');
+                    return;
+                }
+
+                storeSet('qbit_url', url);
+                storeSet('qbit_savepath', savepath);
+                storeSet('qbit_smb_file', smb);
+
+                close();
+                notify('Настройки сохранены');
+
+                if (typeof onDone === 'function') {
+                    onDone();
+                }
+            }
+        );
     }
 
     // ========================================================================
@@ -922,8 +923,7 @@ if (!window.jQuery) {
             }
         );
     }
-
-    // ========================================================================
+       // ========================================================================
     // SMB И ЗАПУСК ПЛЕЕРА
     // ========================================================================
 
@@ -933,8 +933,9 @@ if (!window.jQuery) {
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
-        var file = cleanFsPath(fileName);
-        file = fileBasename(file);
+        // Важно: не отбрасываем каталоги внутри торрента.
+        // Например, Season 1/Episode 01.mkv останется целым путём.
+        var file = cleanFsPath(fileName).replace(/^\/+/, '');
 
         var result = smbRoot +
             (file ? '/' + encodeSmbPath(file) : '');
@@ -1126,7 +1127,8 @@ if (!window.jQuery) {
             }
         );
     }
-     // ========================================================================
+
+    // ========================================================================
     // ПРИОРИТЕТ ОТДЕЛЬНОГО ФАЙЛА
     // ========================================================================
 
@@ -1140,6 +1142,9 @@ if (!window.jQuery) {
             '/api/v2/torrents/filePrio',
             body,
             function (response) {
+                // qBittorrent обычно возвращает пустое тело при успехе.
+                // Поэтому пустая строка считается успешным ответом,
+                // а null означает отсутствие ответа.
                 var success = (
                     response !== null &&
                     response !== undefined &&
@@ -1154,6 +1159,7 @@ if (!window.jQuery) {
     function downloadSingleFile(hash, selectedFile, allFiles, callback) {
         if (!selectedFile || selectedFile.id === undefined) {
             notify('Не удалось определить файл');
+            if (callback) callback(false);
             return;
         }
 
@@ -1191,44 +1197,33 @@ if (!window.jQuery) {
 
         var index = 0;
         var changed = false;
+        var failed = false;
 
-        function setNext() {
-            if (index >= allFiles.length) {
-                if (Number(selectedFile.priority) > 0) {
-                    if (changed) {
+        function setSelectedPriority() {
+            setFilePriority(
+                hash,
+                selectedFile.id,
+                1,
+                function (success) {
+                    if (success) {
                         notify(
                             'Выбрана загрузка: ' +
                             fileBasename(selectedFile.name)
                         );
                     } else {
-                        notify(
-                            'Файл уже выбран: ' +
-                            fileBasename(selectedFile.name)
-                        );
+                        notify('Не удалось назначить загрузку файла');
                     }
 
-                    if (callback) callback(true);
-                    return;
+                    if (callback) callback(success);
                 }
+            );
+        }
 
-                setFilePriority(
-                    hash,
-                    selectedFile.id,
-                    1,
-                    function (success) {
-                        if (success) {
-                            notify(
-                                'Выбрана загрузка: ' +
-                                fileBasename(selectedFile.name)
-                            );
-                        } else {
-                            notify('Не удалось назначить загрузку файла');
-                        }
+        function setNext() {
+            if (failed) return;
 
-                        if (callback) callback(success);
-                    }
-                );
-
+            if (index >= allFiles.length) {
+                setSelectedPriority();
                 return;
             }
 
@@ -1249,7 +1244,19 @@ if (!window.jQuery) {
                 file.id,
                 0,
                 function (success) {
-                    if (success) changed = true;
+                    if (!success) {
+                        failed = true;
+
+                        notify(
+                            'Не удалось исключить файл: ' +
+                            fileBasename(file.name)
+                        );
+
+                        if (callback) callback(false);
+                        return;
+                    }
+
+                    changed = true;
                     setNext();
                 }
             );
@@ -1261,6 +1268,7 @@ if (!window.jQuery) {
     function excludeSingleFile(hash, file, callback) {
         if (!file || file.id === undefined) {
             notify('Не удалось определить файл');
+            if (callback) callback(false);
             return;
         }
 
@@ -1338,19 +1346,27 @@ if (!window.jQuery) {
     // ========================================================================
 
     function refreshFileModal(hash) {
+        var requestId = ++fileModalRequestId;
+
         getTorrentInfo(hash, function (torrent) {
+            if (requestId !== fileModalRequestId) return;
+
             if (!torrent) {
                 notify('Торрент не найден');
                 return;
             }
 
             getTorrentFiles(hash, function (files) {
+                if (requestId !== fileModalRequestId) return;
+
                 if (!files) {
                     notify('Не удалось обновить список файлов');
                     return;
                 }
 
-                renderTorrentFiles(hash, torrent, files);
+                // Повторно используем уже открытое окно,
+                // а не накладываем новую модалку поверх старой.
+                renderTorrentFiles(hash, torrent, files, true);
             });
         });
     }
@@ -1359,9 +1375,14 @@ if (!window.jQuery) {
     // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ
     // ========================================================================
 
-    function renderTorrentFiles(hash, torrent, files) {
+    function renderTorrentFiles(hash, torrent, files, isRefresh) {
         if (!window.Lampa || !Lampa.Modal) {
             notify('Окно файлов недоступно');
+            return;
+        }
+
+        if (!window.jQuery) {
+            notify('Не удалось открыть список файлов: jQuery недоступен');
             return;
         }
 
@@ -1493,26 +1514,29 @@ if (!window.jQuery) {
             '</div>';
 
         html.innerHTML = header + list + footer;
-if (!window.jQuery) {
-    notify('Не удалось открыть список файлов: jQuery недоступен');
-    return;
-}
-                Lampa.Modal.open({
+
+        if (isRefresh && activeFileModalHash === hash) {
+            try {
+                Lampa.Modal.close();
+            } catch (error) {}
+        }
+
+        activeFileModalHash = hash;
+
+        Lampa.Modal.open({
             title: 'Файлы торрента',
             html: window.jQuery(html),
             size: 'large',
             align: 'top',
             mask: true,
             onBack: function () {
+                activeFileModalHash = '';
+                fileModalRequestId++;
+
                 Lampa.Modal.close();
                 Lampa.Controller.toggle('content');
             }
         });
-
-        if (!window.jQuery) {
-            log('jQuery не найден: обработчики окна файлов недоступны');
-            return;
-        }
 
         var $html = window.jQuery(html);
 
@@ -1743,10 +1767,9 @@ if (!window.jQuery) {
                         videoFiles.length
                     );
 
-                    // В отличие от кнопки воспроизведения,
-                    // здесь не проверяем общий прогресс торрента.
-                    // Можно открыть список серий до завершения загрузки.
-                    renderTorrentFiles(hash, torrent, files);
+                    // Общий прогресс торрента здесь не проверяется:
+                    // список доступен ещё до завершения загрузки.
+                    renderTorrentFiles(hash, torrent, files, false);
                 }
             );
         });
@@ -1761,6 +1784,8 @@ if (!window.jQuery) {
             notify('Не удалось определить хеш торрента');
             return;
         }
+
+        if (!requireSetup()) return;
 
         log('Хеш из карточки:', hash);
         debugNotify('Получаю информацию о торренте...');
@@ -1870,11 +1895,7 @@ if (!window.jQuery) {
 
                     var selectedFile = videoFiles[0];
 
-                    var fileTitle = String(selectedFile.name)
-                        .replace(/\\/g, '/')
-                        .split('/')
-                        .pop();
-
+                    var fileTitle = fileBasename(selectedFile.name);
                     var smbUri = makeSmbUri(selectedFile.name);
 
                     log('Выбрана серия:', selectedFile.name);
@@ -2007,8 +2028,6 @@ if (!window.jQuery) {
                 }
 
                 checkTorrentProgress(hash, function (progress) {
-                    // Защита от ответа старого запроса после удаления
-                    // торрента или остановки проверки прогресса.
                     if (button.dataset.qbitPolling !== '1') return;
 
                     if (!document.body.contains(button)) {
@@ -2135,13 +2154,15 @@ if (!window.jQuery) {
                     'Применяется только при удалении всего торрента'],
 
                 ['qbit_external_player', 'trigger', true,
-                    'Запускать через плеер Lampa',
-                    'Выберите DDD Player в настройках плеера Lampa'],
+                    'Запускать через внешний плеер AndroidJS',
+                    'Используется AndroidJS.openPlayer. ' +
+                    'При выключении используется плеер Lampa'],
 
                 ['qbit_player_package', 'input',
                     'top.rootu.dddplayer',
-                    'Пакет внешнего плеера',
-                    'DDD Player: top.rootu.dddplayer'],
+                    'Пакет внешнего плеера (справочно)',
+                    'Параметр хранится в настройках. ' +
+                    'AndroidJS.openPlayer самостоятельно выбирает плеер'],
 
                 ['qbit_smb_file', 'input', '',
                     'Корень SMB-папки загрузок',
@@ -2324,7 +2345,6 @@ if (!window.jQuery) {
                     'M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>' +
                     '</svg>';
 
-                // Иконка папки для открытия списка серий.
                 var folderIcon =
                     '<svg viewBox="0 0 24 24">' +
                     '<path fill="currentColor" d="' +
@@ -2449,10 +2469,7 @@ if (!window.jQuery) {
                 deleteButton.title = 'Удалить торрент';
 
                 // ------------------------------------------------
-                // НОВАЯ КНОПКА ПАПКИ
-                // Располагается непосредственно под корзиной.
-                // Открывает все серии, независимо от общего
-                // процента загрузки торрента.
+                // Кнопка папки — список серий
                 // ------------------------------------------------
 
                 var folderButton = createButton(
@@ -2643,12 +2660,12 @@ if (!window.jQuery) {
             '}' +
 
             '.qbit-files {' +
-    'width:100%;' +
-    'max-height:75vh;' +
-    'overflow-y:auto;' +
-    'box-sizing:border-box;' +
-    'padding:16px;' +
-'}' +
+                'width:100%;' +
+                'max-height:75vh;' +
+                'overflow-y:auto;' +
+                'box-sizing:border-box;' +
+                'padding:16px;' +
+            '}' +
 
             '.qbit-files__header {' +
                 'margin-bottom:14px;' +
