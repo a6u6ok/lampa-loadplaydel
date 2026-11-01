@@ -797,7 +797,7 @@
     // ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК
     // ========================================================================
 
-    function handlePlayerButton(hash) {
+        function handlePlayerButton(hash) {
         if (!hash) { notify('Не удалось определить хеш торрента'); return; }
         log('Хеш из карточки:', hash);
         debugNotify('Получаю информацию о торренте...');
@@ -814,7 +814,6 @@
                 var torrents = Array.isArray(info) ? info : (info.torrents || []);
                 if (!torrents.length) {
                     notify('Торрент не найден в qBittorrent');
-                    log('Ответ torrents/info:', infoResponse);
                     return;
                 }
                 torrent = torrents[0];
@@ -825,41 +824,34 @@
             }
 
             var actualHash = String(torrent.hash || hash).trim().toLowerCase();
-            log('Хеш qBittorrent:', actualHash);
-            log('Название:', torrent.name);
-            log('Прогресс:', torrent.progress);
-            log('Метаданные:', torrent.hasMetadata);
-
             if (!actualHash) { notify('qBittorrent не вернул хеш торрента'); return; }
-            if (Number(torrent.progress) < 0.999999) { notify('Торрент ещё не загружен полностью'); return; }
+
+            // Проверяем метаданные
+            if (!torrent.hasMetadata) {
+                notify('Ожидание метаданных торрента...');
+            }
 
             debugNotify('Получаю список файлов...');
+            
+            // Запускаем цикл запроса файлов, пока они не появятся
             requestTorrentFiles(actualHash, 0, function (files) {
                 if (!files || !files.length) {
-                    notify('qBittorrent не вернул список файлов. Проверьте метаданные и хеш торрента.');
-                    log('Пустой список файлов. Хеш:', actualHash);
+                    // Если файлов нет, открываем окно с сообщением
+                    var html = document.createElement('div');
+                    html.innerHTML = '<div style="padding:20px;text-align:center;">' +
+                        '<div style="font-size:16px;margin-bottom:10px;">Список файлов пуст</div>' +
+                        '<div style="font-size:13px;opacity:0.7;">qBittorrent ещё не скачал метаданные этого торрента. Подождите немного и попробуйте снова.</div>' +
+                        '</div>';
+                    Lampa.Modal.open({
+                        title: 'Файлы торрента',
+                        html: html,
+                        size: 'medium'
+                    });
                     return;
                 }
-                log('Всего файлов:', files.length);
-                var videoFiles = files.filter(function (file) {
-                    var name = String(file.name || '');
-                    if (!isVideoFile(name)) return false;
-                    if (Number(file.progress) < 0.999999) return false;
-                    if (/sample|trailer|preview|прочее/i.test(name)) return false;
-                    return true;
-                });
 
-                if (!videoFiles.length) { notify('Нет полностью загруженных видеофайлов'); return; }
-                videoFiles.sort(compareVideoFiles);
-                var selectedFile = videoFiles[0];
-                var fileTitle = String(selectedFile.name).replace(/\\/g, '/').split('/').pop();
-                var smbUri = makeSmbUri(selectedFile.name);
-
-                log('Выбрана серия:', selectedFile.name);
-                log('Размер:', formatSize(selectedFile.size));
-                log('SMB URI:', smbUri);
-                notify('Запускаю: ' + fileTitle);
-                openFileInPlayer(smbUri, fileTitle);
+                // Если файлы есть, рисуем окно со списком
+                renderTorrentFiles(actualHash, torrent, files);
             });
         });
     }
@@ -1071,7 +1063,7 @@
     // КНОПКИ В КАРТОЧКЕ ТОРРЕНТА
     // ========================================================================
 
-    function initTorrentButton() {
+        function initTorrentButton() {
         if (!window.Lampa || !Lampa.Listener) {
             console.error('[qBittorrent] Listener unavailable');
             return;
@@ -1081,10 +1073,12 @@
                 if (!event || event.type !== 'render' || !event.item) return;
                 var item = event.item.jquery ? event.item[0] : event.item;
                 if (!item) return;
-                var data = event.element || {};
+
+                // Ищем контейнер для кнопок. Если не нашли, берем сам item
                 var container = item.querySelector('.torrent-item__right') || item.querySelector('.torrent-item') || item;
                 if (container.querySelector('.qbit-direct-actions')) return;
 
+                var data = event.element || {};
                 var magnet = extractMagnet(data) || extractMagnet(event);
                 var hash = extractTorrentHash(data) || extractTorrentHash(event);
                 if (!hash && magnet) hash = magnetHash(magnet);
@@ -1097,15 +1091,7 @@
                 var playIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
                 var deleteIcon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
 
-                // Кнопка открытия списка файлов (МОДАЛКА).
-                var playerButton = createButton('qbit-direct-player', '', function () {
-                    var currentHash = hash || extractTorrentHash(data) || extractTorrentHash(event) || magnetHash(magnet);
-                    if (!requireSetup()) return;
-                    refreshFileModal(currentHash);
-                }, playIcon);
-                playerButton.title = 'Файлы торрента';
-
-                // Кнопка добавления торрента.
+                // Кнопка добавления торрента (qB)
                 var addButton = createButton('qbit-direct-add', 'qB', function () {
                     if (!requireSetup()) return;
                     if (!magnet) { notify('Не найдена magnet-ссылка'); return; }
@@ -1125,7 +1111,15 @@
                 }, downloadIcon);
                 addButton.title = 'Добавить торрент';
 
-                // Кнопка удаления всего торрента.
+                // Синяя кнопка Плей (открывает список серий)
+                var playerButton = createButton('qbit-direct-player', '', function () {
+                    var currentHash = hash || extractTorrentHash(data) || extractTorrentHash(event) || magnetHash(magnet);
+                    if (!requireSetup()) return;
+                    handlePlayerButton(currentHash);
+                }, playIcon);
+                playerButton.title = 'Файлы торрента';
+
+                // Кнопка удаления
                 var deleteButton = createButton('qbit-direct-delete', '', function () {
                     if (!requireSetup()) return;
                     var target = hash || magnet;
