@@ -273,7 +273,6 @@
     // ========================================================================
 
     // qBittorrent API torrents/files возвращает индекс файла в поле index.
-    // Для filePrio параметр id должен содержать именно этот индекс.
     // Поле id оставлено как резервный вариант совместимости.
 
     function getFileId(file) {
@@ -622,7 +621,7 @@
 
         if (request.body !== undefined && request.body !== null) {
             payload.post_data = String(request.body);
-          }
+        }
 
         function finish(response) {
             if (finished) return;
@@ -971,6 +970,241 @@
     }
 
     // ========================================================================
+    // SMB И ЗАПУСК ПЛЕЕРА
+    // ========================================================================
+
+    function makeSmbUri(fileName) {
+        var smbRoot = String(cfg().smb_file || '')
+            .trim()
+            .replace(/\\/g, '/')
+            .replace(/\/+$/, '');
+
+        if (!/^smb:\/\//i.test(smbRoot)) {
+            notify('Укажите корректный корень SMB в настройках qBittorrent');
+            return '';
+        }
+
+        // Сохраняем полный относительный путь внутри торрента.
+        // Например: Season 1/Episode 01.mkv
+        var file = cleanFsPath(fileName).replace(/^\/+/, '');
+
+        var result = smbRoot +
+            (file ? '/' + encodeSmbPath(file) : '');
+
+        log('SMB URI:', result);
+
+        return result;
+    }
+
+    function openFileInPlayer(fileUri, title) {
+        var uri = String(fileUri || '').trim();
+        if (!uri) {
+            notify('Не указан путь к видеофайлу');
+            return;
+        }
+
+        var config = cfg();
+        var extension = '';
+        var match = /\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
+
+        if (match) extension = '.' + match[1].toLowerCase();
+
+        var playerData = {
+            url: uri,
+            title: title || 'qBittorrent',
+            source: 'qBittorrent',
+            quality: 'auto',
+            exe: extension
+        };
+
+        if (config.external_player) {
+            if (
+                window.AndroidJS &&
+                typeof window.AndroidJS.openPlayer === 'function'
+            ) {
+                try {
+                    window.AndroidJS.openPlayer(
+                        uri,
+                        JSON.stringify(playerData)
+                    );
+                    return;
+                } catch (error) {
+                    console.error('[qBittorrent] openPlayer:', error);
+                    notify('Ошибка запуска видео');
+                    return;
+                }
+            }
+
+            notify('AndroidJS.openPlayer недоступен');
+            return;
+        }
+
+        try {
+            if (
+                window.Lampa &&
+                Lampa.Player &&
+                typeof Lampa.Player.play === 'function'
+            ) {
+                Lampa.Player.play(playerData);
+                return;
+            }
+        } catch (error) {
+            console.error('[qBittorrent] Lampa.Player:', error);
+            notify('Ошибка встроенного плеера');
+            return;
+        }
+
+        notify('Не удалось запустить плеер Lampa');
+    }
+
+    // ========================================================================
+    // ИНФОРМАЦИЯ О СЕРИЯХ
+    // ========================================================================
+
+    function getEpisodeInfo(filename) {
+        var name = fileBasename(filename);
+
+        var patterns = [
+            /S(\d{1,2})E(\d{1,3})/i,
+            /(\d{1,2})x(\d{1,3})/i,
+            /Season[\s._-]*(\d{1,2})[\s._-]*Episode[\s._-]*(\d{1,3})/i,
+            /Сезон[\s._-]*(\d{1,2})[\s._-]*Серия[\s._-]*(\d{1,3})/i,
+            /(\d{1,2})\s*сезон[\s._-]*(\d{1,3})\s*серия/i
+        ];
+
+        for (var i = 0; i < patterns.length; i++) {
+            var match = patterns[i].exec(name);
+
+            if (match) {
+                return {
+                    season: Number(match[1]),
+                    episode: Number(match[2]),
+                    found: true
+                };
+            }
+        }
+
+        return {
+            season: 0,
+            episode: 0,
+            found: false
+        };
+    }
+
+    function compareVideoFiles(a, b) {
+        var infoA = getEpisodeInfo(a.name);
+        var infoB = getEpisodeInfo(b.name);
+
+        if (infoA.found && !infoB.found) return -1;
+        if (!infoA.found && infoB.found) return 1;
+
+        if (infoA.found && infoB.found) {
+            if (infoA.season !== infoB.season) {
+                return infoA.season - infoB.season;
+            }
+
+            if (infoA.episode !== infoB.episode) {
+                return infoA.episode - infoB.episode;
+            }
+        }
+
+        return String(a.name).localeCompare(
+            String(b.name),
+            undefined,
+            {
+                numeric: true,
+                sensitivity: 'base'
+            }
+        );
+    }
+
+    // ========================================================================
+    // ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОРРЕНТЕ
+    // ========================================================================
+
+    function getTorrentInfo(hash, callback) {
+        var target = String(hash || '').trim().toLowerCase();
+        if (!target) {
+            if (callback) callback(null);
+            return;
+        }
+
+        function parseTorrents(response) {
+            if (typeof response !== 'string' || !response.trim()) return null;
+            try {
+                var data = JSON.parse(response);
+                if (Array.isArray(data)) return data;
+                if (data && Array.isArray(data.torrents)) return data.torrents;
+            } catch (error) {
+                log('Ошибка разбора torrents/info:', error);
+            }
+            return null;
+        }
+
+        function matches(torrent) {
+            if (!torrent) return false;
+            var candidates = [torrent.hash, torrent.infohash_v1, torrent.infohash_v2];
+            return candidates.some(function (value) {
+                return String(value || '').trim().toLowerCase() === target;
+            });
+        }
+
+        qbGet(
+            '/api/v2/torrents/info?hashes=' + encodeURIComponent(target),
+            function (response) {
+                var torrents = parseTorrents(response);
+                if (torrents && torrents.length) {
+                    var exact = torrents.filter(matches)[0];
+                    if (exact) {
+                        if (callback) callback(exact);
+                        return;
+                    }
+                }
+
+                // Некоторые сборки qBittorrent/магнет-ссылки не находят
+                // торрент по переданному v1/v2 hash. Проверяем полный список.
+                qbGet('/api/v2/torrents/info', function (allResponse) {
+                    var all = parseTorrents(allResponse) || [];
+                    var found = all.filter(matches)[0] || null;
+                    if (!found) {
+                        log('Торрент не найден по хешу:', target,
+                            'Всего записей:', all.length);
+                    }
+                    if (callback) callback(found);
+                });
+            }
+        );
+    }
+
+    function getTorrentFiles(hash, callback) {
+        qbGet(
+            '/api/v2/torrents/files?hash=' +
+            encodeURIComponent(hash),
+            function (response) {
+                if (!response) {
+                    callback(null);
+                    return;
+                }
+
+                try {
+                    var files = JSON.parse(response);
+
+                    callback(
+                        Array.isArray(files) ? files : null
+                    );
+                } catch (error) {
+                    console.error(
+                        '[qBittorrent] files parse:',
+                        error
+                    );
+
+                    callback(null);
+                }
+            }
+        );
+    }
+
+    // ========================================================================
     // ОТКРЫТИЕ ВИДЕОФАЙЛА
     // ========================================================================
 
@@ -1008,6 +1242,30 @@
     // ОБНОВЛЕНИЕ СПИСКА ФАЙЛОВ
     // ========================================================================
 
+    function refreshFileModal(hash) {
+        var requestId = ++fileModalRequestId;
+
+        getTorrentInfo(hash, function (torrent) {
+            if (requestId !== fileModalRequestId) return;
+
+            if (!torrent) {
+                notify('Торрент не найден');
+                return;
+            }
+
+            getTorrentFiles(hash, function (files) {
+                if (requestId !== fileModalRequestId) return;
+
+                if (!files) {
+                    notify('Не удалось обновить список файлов');
+                    return;
+                }
+
+                renderTorrentFiles(hash, torrent, files, true);
+            });
+        });
+    }
+
     // ========================================================================
     // ФОКУС И УПРАВЛЕНИЕ ПУЛЬТОМ
     // ========================================================================
@@ -1015,57 +1273,44 @@
     function focusFirstFileButton(container) {
         if (!container) return;
 
-        var scrollContainer = container.querySelector('.qbit-files__list') || container;
-
-        function centerFocused(element) {
-            if (!element || !scrollContainer) return;
-            try {
-                var item = element.closest('.qbit-file') || element;
-                var itemRect = item.getBoundingClientRect();
-                var boxRect = scrollContainer.getBoundingClientRect();
-                var target = scrollContainer.scrollTop +
-                    (itemRect.top - boxRect.top) -
-                    (scrollContainer.clientHeight - itemRect.height) / 2;
-                scrollContainer.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-            } catch (error) {
-                try { element.scrollIntoView(true); } catch (ignore) {}
-            }
-        }
-
-        container.addEventListener('focusin', function (event) {
-            var target = event.target;
-            if (target && target.matches('.qbit-file__play.selector')) {
-                centerFocused(target);
-            }
-        });
-
-        // На Android TV фокус Lampa иногда меняется без нативного focusin.
-        container.addEventListener('hover:focus', function (event) {
-            if (event.target && event.target.matches('.qbit-file__play.selector')) {
-                centerFocused(event.target);
-            }
-        }, true);
-
         setTimeout(function () {
-            var first = container.querySelector('.qbit-file__play.selector:not(:disabled)');
-            if (!first) return;
-            try { first.focus(); } catch (error) {}
+            var buttons = container.querySelectorAll(
+                '.qbit-file__button.selector:not(:disabled), ' +
+                '.qbit-files__refresh.selector'
+            );
+
+            if (!buttons.length) return;
+
+            var first = buttons[0];
+
             try {
-                if (window.Lampa && Lampa.Controller &&
-                    typeof Lampa.Controller.collectionFocus === 'function') {
-                    Lampa.Controller.collectionFocus(false,
-                        '.qbit-file__play.selector:not(:disabled)');
+                first.focus();
+                centerFocusedFile(first, container);
+            } catch (error) {}
+
+            try {
+                if (
+                    window.Lampa &&
+                    Lampa.Controller &&
+                    typeof Lampa.Controller.collectionFocus === 'function'
+                ) {
+                    Lampa.Controller.collectionFocus(
+                        false,
+                        '.qbit-file__button.selector:not(:disabled), ' +
+                        '.qbit-files__refresh.selector'
+                    );
                 }
-            } catch (error) { log('Не удалось установить фокус:', error); }
-            centerFocused(first);
-        }, 180);
+            } catch (error) {
+                log('Не удалось установить фокус:', error);
+            }
+        }, 150);
     }
 
     // ========================================================================
     // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ
     // ========================================================================
 
-    function renderTorrentFiles(hash, torrent, files) {
+    function renderTorrentFiles(hash, torrent, files, isRefresh) {
         if (!window.Lampa || !Lampa.Modal) {
             notify('Окно файлов недоступно');
             return;
@@ -1075,10 +1320,11 @@
             return;
         }
 
-        var videoFiles = files.filter(function (file) {
+        var videoFiles = (files || []).filter(function (file) {
             return isVideoFile(file.name);
         });
         videoFiles.sort(compareVideoFiles);
+
         if (!videoFiles.length) {
             notify('В торренте нет видеофайлов');
             return;
@@ -1087,15 +1333,16 @@
         var completed = videoFiles.filter(function (file) {
             return Number(file.progress) >= 0.999999;
         }).length;
+
         var html = document.createElement('div');
         html.className = 'qbit-files';
-        var torrentName = torrent.name || 'Торрент';
+        var torrentName = torrent && torrent.name ? torrent.name : 'Торрент';
         var header =
             '<div class="qbit-files__header">' +
                 '<div class="qbit-files__torrent">' + escapeHtml(torrentName) + '</div>' +
                 '<div class="qbit-files__summary">Видео: ' + videoFiles.length +
-                    ' · Загружено: ' + completed + '</div>' +
-                '<div class="qbit-files__hint">Выберите загруженную серию для воспроизведения</div>' +
+                ' · Загружено: ' + completed + '</div>' +
+                '<div class="qbit-files__hint">Выберите серию для воспроизведения</div>' +
             '</div>';
         var list = '<div class="qbit-files__list">';
 
@@ -1103,12 +1350,12 @@
             var progress = Math.max(0, Math.min(100, Math.floor((Number(file.progress) || 0) * 100)));
             var ready = progress >= 100;
             var fileId = getFileId(file);
-            var idAttribute = fileId === null ? '' : String(fileId);
             var name = fileBasename(file.name);
             var episode = getEpisodeInfo(file.name);
             var episodeLabel = episode.found ?
                 'Сезон ' + episode.season + ' · Серия ' + episode.episode : '';
             var status = ready ? 'Загружено' : 'Загрузка: ' + progress + '%';
+            var idAttribute = fileId === null ? '' : String(fileId);
 
             list +=
                 '<div class="qbit-file" data-file-id="' + escapeHtml(idAttribute) + '">' +
@@ -1120,14 +1367,22 @@
                     '</div>' +
                     '<div class="qbit-file__actions">' +
                         '<button type="button" class="qbit-file__button qbit-file__play selector"' +
-                            ' tabindex="0" data-action="play" data-id="' + escapeHtml(idAttribute) + '"' +
-                            (ready && fileId !== null ? '' : ' disabled') + '>Играть</button>' +
+                        ' tabindex="0" data-action="play" data-id="' + escapeHtml(idAttribute) + '"' +
+                        (ready ? '' : ' disabled') + '>Играть</button>' +
                     '</div>' +
                 '</div>';
         });
         list += '</div>';
-        html.innerHTML = header + list;
 
+        var footer =
+            '<div class="qbit-files__footer">' +
+                '<button type="button" class="qbit-files__refresh selector" tabindex="0">Обновить список</button>' +
+            '</div>';
+        html.innerHTML = header + list + footer;
+
+        if (isRefresh && activeFileModalHash === hash) {
+            try { Lampa.Modal.close(); } catch (error) {}
+        }
         activeFileModalHash = hash;
         Lampa.Modal.open({
             title: 'Файлы торрента',
@@ -1152,12 +1407,38 @@
             var id = this.getAttribute('data-id');
             var selected = findTorrentFile(files, id);
             if (!selected) {
-                                notify('Файл не найден в полученном списке qBittorrent');
+                notify('Файл не найден в полученном списке qBittorrent');
                 log('Не найден файл для воспроизведения. Индекс:', id);
                 return;
             }
             playTorrentFile(selected, torrent);
         });
+
+        $html.find('.qbit-files__refresh').on('hover:enter click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            refreshFileModal(hash);
+        });
+
+        // Фокус пульта всегда удерживается в пределах прокручиваемого списка.
+        $html.on('focusin', '.selector', function () {
+            centerFocusedFile(this, html);
+        });
+        $html.on('hover:focus', '.selector', function () {
+            centerFocusedFile(this, html);
+        });
+    }
+
+    function centerFocusedFile(element, container) {
+        if (!element || !container) return;
+        var row = element.closest ? element.closest('.qbit-file') : null;
+        if (!row) return;
+        var box = container.getBoundingClientRect();
+        var item = row.getBoundingClientRect();
+        var delta = (item.top + item.height / 2) - (box.top + box.height / 2);
+        if (Math.abs(delta) > 4) {
+            container.scrollTop += delta;
+        }
     }
 
     // ========================================================================
@@ -1219,7 +1500,7 @@
     }
 
     // ========================================================================
-    // ОТКРЫТИЕ СПИСКА ФАЙЛОВ ТОРРЕНТА
+    // PLAY В КАРТОЧКЕ: ОТКРЫТИЕ СПИСКА ВИДЕОФАЙЛОВ
     // ========================================================================
 
     function handlePlayerButton(hash) {
@@ -1228,8 +1509,9 @@
             return;
         }
         if (!requireSetup()) return;
-        log('Открытие списка файлов. Хеш:', hash);
-        debugNotify('Получаю информацию о торренте...');
+
+        log('Открытие списка серий по кнопке Play. Хеш:', hash);
+        debugNotify('Получаю список серий...');
 
         getTorrentInfo(hash, function (torrent) {
             if (!torrent) {
@@ -1239,23 +1521,19 @@
             var actualHash = String(torrent.hash || hash).trim().toLowerCase();
             requestTorrentFiles(actualHash, 0, function (files) {
                 if (!files || !files.length) {
-                    notify('qBittorrent не вернул список файлов торрента');
-                    log('Пустой список файлов. Хеш:', actualHash);
+                    notify('Не удалось получить список файлов торрента');
                     return;
                 }
-                log('Открываю список файлов:', files.length);
-                renderTorrentFiles(actualHash, torrent, files);
+                if (!files.some(function (file) {
+                    return isVideoFile(file.name);
+                })) {
+                    notify('В торренте нет видеофайлов');
+                    return;
+                }
+                renderTorrentFiles(actualHash, torrent, files, false);
             });
         });
     }
-
-    // ========================================================================
-    // КОНЕЦ ЧАСТИ 2/3
-    // Следующая часть начинается с обработки нажатий и кнопок карточки.
-    // =========================================================================
-     // ========================================================================
-    // ОБРАБОТКА НАЖАТИЙ
-    // ========================================================================
 
     function bindPress(element, handler) {
         var last = 0;
@@ -1606,18 +1884,6 @@
 
         bindPress(button, handler);
 
-        function keepTorrentCardVisible() {
-            try {
-                var card = button.closest('.torrent-item') || button.closest('.torrent-item__right');
-                if (card && typeof card.scrollIntoView === 'function') {
-                    card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                }
-            } catch (error) {}
-        }
-
-        button.addEventListener('focus', keepTorrentCardVisible);
-        button.addEventListener('hover:focus', keepTorrentCardVisible);
-
         return button;
     }
 
@@ -1694,7 +1960,8 @@
                     '<path fill="currentColor" d="' +
                     'M8 5v14l11-7z"/>' +
                     '</svg>';
-                             var deleteIcon =
+
+                var deleteIcon =
                     '<svg viewBox="0 0 24 24">' +
                     '<path fill="currentColor" d="' +
                     'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12z' +
@@ -1833,8 +2100,7 @@
                 }
 
                 // ------------------------------------------------
-                // Порядок кнопок сверху вниз:
-                // qB → список файлов (Play) → корзина
+                // Порядок кнопок сверху вниз: qB → Play → корзина
                 // ------------------------------------------------
 
                 actions.appendChild(addButton);
@@ -2056,21 +2322,13 @@
                 'transition:width 0.3s;' +
             '}' +
 
-            '.qbit-files__list {' +
-                'max-height:58vh;' +
-                'overflow-y:auto;' +
-                'overscroll-behavior:contain;' +
-                'padding:2px 8px 18px 2px;' +
-                'scroll-behavior:smooth;' +
-            '}' +
-
             '.qbit-file__actions {' +
                 'display:flex;' +
                 'flex-wrap:wrap;' +
                 'gap:7px;' +
             '}' +
 
-            '.qbit-file__button {' +
+            '.qbit-file__button, .qbit-files__refresh {' +
                 'border:0;' +
                 'border-radius:5px;' +
                 'padding:8px 12px;' +
@@ -2082,12 +2340,12 @@
                 'transition:transform 0.15s, box-shadow 0.15s;' +
             '}' +
 
-            '.qbit-file__button.selector {' +
+            '.qbit-file__button.selector, .qbit-files__refresh.selector {' +
                 'position:relative;' +
                 'z-index:1;' +
             '}' +
 
-            '.qbit-file__button.focus {' +
+            '.qbit-file__button.focus, .qbit-files__refresh.focus {' +
                 'transform:scale(1.08);' +
                 'outline:3px solid #fff;' +
                 'outline-offset:3px;' +
@@ -2105,6 +2363,17 @@
                 'transform:none;' +
                 'outline:none;' +
                 'box-shadow:none;' +
+            '}' +
+
+            '.qbit-files__footer {' +
+                'padding-top:12px;' +
+                'border-top:1px solid rgba(128,128,128,0.25);' +
+            '}' +
+
+            '.qbit-files__refresh {' +
+                'background:#555;' +
+                'width:100%;' +
+                'padding:10px;' +
             '}' +
 
             '.qbit-wizard {' +
@@ -2197,7 +2466,7 @@
 
             log('contentLayout: NoSubfolder');
             log('Управление отдельными файлами включено');
-            log('Кнопка Play открывает список файлов торрента');
+            log('Открытие списка файлов кнопкой Play включено');
             log('Использование index qBittorrent API включено');
             log('Поддержка фокуса Android TV включена');
             log('Плагин загружен');
@@ -2240,4 +2509,4 @@
         }, 5000);
     }
 
-})();   
+})();
