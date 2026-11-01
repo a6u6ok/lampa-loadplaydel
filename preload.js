@@ -20,7 +20,10 @@
     var POLL_INTERVAL = 3000;
     var VERIFY_INTERVAL = 1500;
     var VERIFY_ATTEMPTS = 40;
-    var METADATA_ATTEMPTS = 40;
+
+    // Ожидание метаданных magnet: 80 проверок × 1,5 секунды = около 120 секунд.
+    var METADATA_ATTEMPTS = 80;
+    var METADATA_INTERVAL = 1500;
 
     var nativeRequestId = 0;
     var sid = '';
@@ -28,6 +31,10 @@
 
     var activeFileModalHash = '';
     var fileModalRequestId = 0;
+
+    // Один цикл ожидания метаданных на один hash.
+    // Повторные нажатия подключаются к уже выполняющемуся ожиданию.
+    var metadataWaits = {};
 
     var CT_FORM = {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -352,7 +359,10 @@
         for (var i = 0; i < fields.length; i++) {
             var value = data[fields[i]];
 
-            if (typeof value === 'string' && /^magnet:\?/i.test(value)) {
+            if (
+                typeof value === 'string' &&
+                /^magnet:\?/i.test(value)
+            ) {
                 return value;
             }
 
@@ -876,7 +886,7 @@
     }
 
     // Добавление именно для кнопки «Папка».
-    // paused=true не позволяет начать скачивание всех серий.
+    // Торрент добавляется на паузе: все серии не начинают скачиваться.
     function qbAddPaused(magnet, title, callback) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
             notify('В карточке нет magnet-ссылки');
@@ -895,7 +905,7 @@
         getTorrentInfo(hash, function (existingTorrent) {
             if (existingTorrent) {
                 log('Торрент уже существует, повторно не добавляю');
-                callback(true, existingTorrent);
+                waitForTorrentMetadata(hash, 0, callback);
                 return;
             }
 
@@ -924,69 +934,182 @@
             );
         });
     }
-
-    // ========================================================================
+        // ========================================================================
     // ОЖИДАНИЕ ТОРРЕНТА И МЕТАДАННЫХ
     // ========================================================================
 
-    function waitForTorrentMetadata(hash, attempt, callback) {
-        attempt = attempt || 0;
+    /*
+     * Важное исправление:
+     *
+     * Раньше ожидание метаданных и повторный запрос файлов запускали
+     * вложенные циклы. Из-за этого кнопка могла долго показывать
+     * «Получаю список серий...» и не открывать окно.
+     *
+     * Теперь используется один цикл:
+     * 1. Проверяем наличие торрента.
+     * 2. Проверяем hasMetadata.
+     * 3. Запрашиваем список файлов.
+     * 4. Если файлов пока нет — повторяем проверку.
+     * 5. При успехе или ошибке завершаем ожидание и сбрасываем состояние.
+     */
 
-        getTorrentInfo(hash, function (torrent) {
-            if (!torrent) {
-                if (attempt >= VERIFY_ATTEMPTS) {
-                    notify('Торрент не появился в qBittorrent');
-                    callback(false);
-                    return;
-                }
+    function finishMetadataWait(hash, success, torrent, files) {
+        var key = String(hash || '').toLowerCase();
+        var state = metadataWaits[key];
 
-                if (attempt === 0) {
-                    notify('Ожидаю появления торрента...');
-                }
+        if (!state || state.finished) return;
 
-                setTimeout(function () {
-                    waitForTorrentMetadata(hash, attempt + 1, callback);
-                }, VERIFY_INTERVAL);
+        state.finished = true;
+        delete metadataWaits[key];
 
-                return;
+        var callbacks = state.callbacks.slice();
+
+        state.callbacks = [];
+
+        log(
+            'Ожидание метаданных завершено:',
+            key,
+            'успех:',
+            success,
+            'файлов:',
+            files ? files.length : 0
+        );
+
+        callbacks.forEach(function (callback) {
+            try {
+                callback(
+                    success,
+                    torrent || null,
+                    files || null
+                );
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] metadata callback:',
+                    error
+                );
             }
-
-            if (torrent.hasMetadata === false) {
-                if (attempt >= METADATA_ATTEMPTS) {
-                    notify('Не удалось получить метаданные торрента');
-                    callback(false);
-                    return;
-                }
-
-                if (attempt === 0) {
-                    notify('Получаю метаданные торрента...');
-                }
-
-                setTimeout(function () {
-                    waitForTorrentMetadata(hash, attempt + 1, callback);
-                }, VERIFY_INTERVAL);
-
-                return;
-            }
-
-            requestTorrentFiles(hash, 0, function (files) {
-                if (files && files.length) {
-                    log('Метаданные получены. Файлов:', files.length);
-                    callback(true, torrent, files);
-                    return;
-                }
-
-                if (attempt >= METADATA_ATTEMPTS) {
-                    notify('qBittorrent не вернул список файлов');
-                    callback(false);
-                    return;
-                }
-
-                setTimeout(function () {
-                    waitForTorrentMetadata(hash, attempt + 1, callback);
-                }, VERIFY_INTERVAL);
-            });
         });
+    }
+
+    function waitForTorrentMetadata(hash, attempt, callback) {
+        hash = String(hash || '').trim().toLowerCase();
+        attempt = Number(attempt) || 0;
+
+        if (!hash) {
+            if (typeof callback === 'function') callback(false);
+            return;
+        }
+
+        var key = hash;
+
+        // Если ожидание уже выполняется, добавляем callback
+        // к существующему процессу вместо запуска второго цикла.
+        if (metadataWaits[key]) {
+            if (typeof callback === 'function') {
+                metadataWaits[key].callbacks.push(callback);
+            }
+
+            log('Ожидание уже выполняется для:', hash);
+            return;
+        }
+
+        metadataWaits[key] = {
+            callbacks: typeof callback === 'function' ? [callback] : [],
+            finished: false,
+            attempt: attempt
+        };
+
+        notify('Получаю список серий...');
+
+        function retry(reason) {
+            var state = metadataWaits[key];
+
+            if (!state || state.finished) return;
+
+            state.attempt++;
+
+            log(
+                'Метаданные ещё не готовы:',
+                reason,
+                'попытка:',
+                state.attempt,
+                'из:',
+                METADATA_ATTEMPTS
+            );
+
+            if (state.attempt >= METADATA_ATTEMPTS) {
+                finishMetadataWait(key, false, null, null);
+
+                notify(
+                    'Не удалось получить список файлов. ' +
+                    'Проверьте подключение и повторите попытку.'
+                );
+
+                return;
+            }
+
+            setTimeout(function () {
+                checkMetadata();
+            }, METADATA_INTERVAL);
+        }
+
+        function checkMetadata() {
+            var state = metadataWaits[key];
+
+            if (!state || state.finished) return;
+
+            getTorrentInfo(key, function (torrent) {
+                var currentState = metadataWaits[key];
+
+                if (!currentState || currentState.finished) return;
+
+                if (!torrent) {
+                    retry('торрент пока не найден');
+                    return;
+                }
+
+                // hasMetadata=false означает, что magnet ещё
+                // не получил метаданные от раздающих.
+                if (torrent.hasMetadata === false) {
+                    retry('qBittorrent получает метаданные magnet');
+                    return;
+                }
+
+                // Даже если hasMetadata отсутствует в ответе API,
+                // окончательным признаком готовности считаем наличие
+                // реального списка файлов.
+                requestTorrentFiles(key, 0, function (files) {
+                    var latestState = metadataWaits[key];
+
+                    if (!latestState || latestState.finished) return;
+
+                    if (
+                        Array.isArray(files) &&
+                        files.length > 0
+                    ) {
+                        log(
+                            'Метаданные получены:',
+                            torrent.name,
+                            'файлов:',
+                            files.length
+                        );
+
+                        finishMetadataWait(
+                            key,
+                            true,
+                            torrent,
+                            files
+                        );
+
+                        return;
+                    }
+
+                    retry('список файлов пока пуст');
+                });
+            });
+        }
+
+        checkMetadata();
     }
 
     // ========================================================================
@@ -1041,6 +1164,14 @@
                 notify('Ошибка удаления торрента');
                 if (onComplete) onComplete(false);
                 return;
+            }
+
+            // Если торрент удалили во время ожидания метаданных,
+            // завершаем ожидание, чтобы не оставлять зависшее состояние.
+            var key = String(hash).toLowerCase();
+
+            if (metadataWaits[key]) {
+                finishMetadataWait(key, false, null, null);
             }
 
             notify(
@@ -1108,11 +1239,14 @@
                     return;
                 }
 
-                // Важно: торрент мог быть добавлен кнопкой «Папка» на паузе.
-                // После выбора серии снимаем паузу.
+                // Снимаем паузу только после назначения приоритетов.
+                // Остальные файлы к этому моменту исключены.
                 resumeTorrent(hash, function (resumed) {
                     if (resumed) {
-                        notify('Загрузка выбрана: ' + fileBasename(selectedFile.name));
+                        notify(
+                            'Загрузка выбрана: ' +
+                            fileBasename(selectedFile.name)
+                        );
                     }
 
                     if (callback) callback(resumed);
@@ -1131,7 +1265,10 @@
             var file = allFiles[index++];
             var currentId = getFileId(file);
 
-            if (currentId === null || String(currentId) === String(selectedId)) {
+            if (
+                currentId === null ||
+                String(currentId) === String(selectedId)
+            ) {
                 setNext();
                 return;
             }
@@ -1144,7 +1281,12 @@
             setFilePriority(hash, currentId, 0, function (success) {
                 if (!success) {
                     failed = true;
-                    notify('Не удалось исключить файл: ' + fileBasename(file.name));
+
+                    notify(
+                        'Не удалось исключить файл: ' +
+                        fileBasename(file.name)
+                    );
+
                     if (callback) callback(false);
                     return;
                 }
@@ -1187,7 +1329,8 @@
             if (callback) callback(success);
         });
     }
-        // ========================================================================
+
+    // ========================================================================
     // SMB И ЗАПУСК ПЛЕЕРА
     // ========================================================================
 
@@ -1197,6 +1340,7 @@
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
+        // Сохраняем относительные подпапки внутри торрента.
         var file = cleanFsPath(fileName).replace(/^\/+/, '');
 
         var result = smbRoot +
@@ -1414,11 +1558,20 @@
     }
 
     // ========================================================================
-    // ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
+    // ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
     // ========================================================================
 
+    /*
+     * Здесь намеренно оставлен один HTTP-запрос.
+     * Повторные попытки выполняет waitForTorrentMetadata().
+     * Это исключает вложенные циклы ожидания.
+     */
+
     function requestTorrentFiles(hash, attempt, callback) {
-        attempt = attempt || 0;
+        if (!hash) {
+            callback(null);
+            return;
+        }
 
         qbRequest({
             url: base() +
@@ -1427,39 +1580,35 @@
             method: 'GET',
             headers: authHeaders()
         }, function (response) {
-            var files = [];
+            var files = null;
 
             try {
                 if (typeof response === 'string' && response.length) {
-                    files = JSON.parse(response);
+                    var parsed = JSON.parse(response);
+
+                    if (Array.isArray(parsed)) {
+                        files = parsed;
+                    }
                 }
             } catch (error) {
                 log('Ошибка разбора списка файлов:', response, error);
             }
 
-            if (Array.isArray(files) && files.length) {
+            if (files && files.length) {
                 log('Получено файлов:', files.length);
                 callback(files);
                 return;
             }
 
             log(
-                'Список файлов пока пуст. Попытка:',
-                attempt + 1,
+                'Список файлов пока недоступен.',
                 'Хеш:',
-                hash
+                hash,
+                'ответ:',
+                response
             );
 
-            // Увеличенный интервал ожидания нужен для magnet:
-            // qBittorrent должен сначала получить метаданные.
-            if (attempt >= 39) {
-                callback([]);
-                return;
-            }
-
-            setTimeout(function () {
-                requestTorrentFiles(hash, attempt + 1, callback);
-            }, 1500);
+            callback([]);
         });
     }
 
@@ -1527,8 +1676,7 @@
             }
         }, 150);
     }
-
-    // ========================================================================
+        // ========================================================================
     // ОТРИСОВКА СПИСКА ФАЙЛОВ
     // ========================================================================
 
@@ -1815,21 +1963,17 @@
     }
 
     // ========================================================================
-    // КНОПКА «ПАПКА» — ГЛАВНОЕ ИСПРАВЛЕНИЕ
+    // КНОПКА «ПАПКА»
     // ========================================================================
 
     function handleFolderButton(hash, magnet, title) {
         magnet = magnet || '';
         title = title || '';
 
-        // Сначала пытаемся получить hash из magnet.
         if (!hash && magnet) {
             hash = magnetHash(magnet);
         }
 
-        // Если magnet отсутствует, но есть корректный BTIH hash,
-        // формируем magnet-ссылку. Это позволяет добавить торрент
-        // при наличии одного только infohash.
         if (!magnet && hash) {
             magnet = 'magnet:?xt=urn:btih:' + hash;
         }
@@ -1846,31 +1990,39 @@
 
         if (!requireSetup()) return;
 
+        hash = String(hash).toLowerCase();
+
         log('Кнопка «Папка». Хеш:', hash);
         log('Magnet найден:', !!magnet);
 
         debugNotify('Проверяю торрент в qBittorrent...');
 
-        // Сценарий 1: торрент уже есть в qBittorrent.
+        // Сначала проверяем, есть ли торрент в qBittorrent.
         getTorrentInfo(hash, function (torrent) {
             if (torrent) {
                 log('Торрент уже находится в qBittorrent:', torrent.name);
-                debugNotify('Получаю список серий...');
 
-                requestTorrentFiles(hash, 0, function (files) {
-                    if (!files || !files.length) {
-                        notify('Не удалось получить список файлов торрента');
-                        return;
+                // Не запрашиваем файлы один раз и не завершаем работу,
+                // если qBittorrent ещё получает magnet metadata.
+                waitForTorrentMetadata(
+                    hash,
+                    0,
+                    function (success, readyTorrent, files) {
+                        if (!success) return;
+
+                        renderTorrentFiles(
+                            hash,
+                            readyTorrent || torrent,
+                            files,
+                            false
+                        );
                     }
-
-                    renderTorrentFiles(hash, torrent, files, false);
-                });
+                );
 
                 return;
             }
 
-            // Сценарий 2: торрента нет в qBittorrent.
-            // Добавляем его на паузе и ждём метаданные.
+            // Если торрента нет, для добавления нужна magnet-ссылка.
             if (!magnet) {
                 notify(
                     'Торрент отсутствует в qBittorrent, ' +
@@ -1881,44 +2033,40 @@
 
             log('Торрент отсутствует. Добавляю на паузе.');
 
-            qbAddPaused(magnet, title, function (success, addedTorrent, files) {
-                if (!success) return;
+            qbAddPaused(
+                magnet,
+                title,
+                function (success, addedTorrent, files) {
+                    if (!success) return;
 
-                // Метаданные и файлы могли быть получены
-                // непосредственно во время ожидания добавления.
-                if (addedTorrent && files && files.length) {
-                    renderTorrentFiles(
-                        hash,
-                        addedTorrent,
-                        files,
-                        false
-                    );
-                    return;
-                }
-
-                // На случай, если callback пришёл без списка файлов,
-                // ещё раз запрашиваем данные.
-                getTorrentInfo(hash, function (currentTorrent) {
-                    if (!currentTorrent) {
-                        notify('Торрент добавлен, но пока не найден');
+                    if (addedTorrent && files && files.length) {
+                        renderTorrentFiles(
+                            hash,
+                            addedTorrent,
+                            files,
+                            false
+                        );
                         return;
                     }
 
-                    requestTorrentFiles(hash, 0, function (currentFiles) {
-                        if (!currentFiles || !currentFiles.length) {
-                            notify('Не удалось получить файлы торрента');
-                            return;
-                        }
+                    // Дополнительная проверка на случай, если callback
+                    // пришёл без списка файлов.
+                    waitForTorrentMetadata(
+                        hash,
+                        0,
+                        function (metadataReady, currentTorrent, currentFiles) {
+                            if (!metadataReady) return;
 
-                        renderTorrentFiles(
-                            hash,
-                            currentTorrent,
-                            currentFiles,
-                            false
-                        );
-                    });
-                });
-            });
+                            renderTorrentFiles(
+                                hash,
+                                currentTorrent,
+                                currentFiles,
+                                false
+                            );
+                        }
+                    );
+                }
+            );
         });
     }
 
@@ -1958,46 +2106,48 @@
 
             debugNotify('Получаю список файлов...');
 
-            requestTorrentFiles(actualHash, 0, function (files) {
-                if (!files || !files.length) {
-                    notify('qBittorrent не вернул список файлов');
-                    return;
-                }
+            waitForTorrentMetadata(
+                actualHash,
+                0,
+                function (success, readyTorrent, files) {
+                    if (!success || !files || !files.length) return;
 
-                var videoFiles = files.filter(function (file) {
-                    var name = String(file.name || '');
+                    var videoFiles = files.filter(function (file) {
+                        var name = String(file.name || '');
 
-                    if (!isVideoFile(name)) return false;
-                    if (Number(file.progress) < 0.999999) return false;
+                        if (!isVideoFile(name)) return false;
+                        if (Number(file.progress) < 0.999999) return false;
 
-                    if (/sample|trailer|preview|прочее/i.test(name)) {
-                        return false;
+                        if (/sample|trailer|preview|прочее/i.test(name)) {
+                            return false;
+                        }
+
+                        return true;
+                    });
+
+                    if (!videoFiles.length) {
+                        notify('Нет полностью загруженных видеофайлов');
+                        return;
                     }
 
-                    return true;
-                });
+                    videoFiles.sort(compareVideoFiles);
 
-                if (!videoFiles.length) {
-                    notify('Нет полностью загруженных видеофайлов');
-                    return;
+                    var selectedFile = videoFiles[0];
+                    var fileTitle = fileBasename(selectedFile.name);
+                    var smbUri = makeSmbUri(selectedFile.name);
+
+                    log('Выбрана серия:', selectedFile.name);
+                    log('Размер:', formatSize(selectedFile.size));
+                    log('SMB URI:', smbUri);
+
+                    notify('Запускаю: ' + fileTitle);
+                    openFileInPlayer(smbUri, fileTitle);
                 }
-
-                videoFiles.sort(compareVideoFiles);
-
-                var selectedFile = videoFiles[0];
-                var fileTitle = fileBasename(selectedFile.name);
-                var smbUri = makeSmbUri(selectedFile.name);
-
-                log('Выбрана серия:', selectedFile.name);
-                log('Размер:', formatSize(selectedFile.size));
-                log('SMB URI:', smbUri);
-
-                notify('Запускаю: ' + fileTitle);
-                openFileInPlayer(smbUri, fileTitle);
-            });
+            );
         });
     }
-        // ========================================================================
+
+    // ========================================================================
     // ОБРАБОТКА НАЖАТИЙ
     // ========================================================================
 
@@ -2521,9 +2671,6 @@
                     'qbit-direct-folder',
                     '',
                     function () {
-                        // Передаём не только hash, но и magnet.
-                        // Именно это позволяет добавить отсутствующий
-                        // в qBittorrent торрент.
                         var currentMagnet =
                             magnet ||
                             extractMagnet(data) ||
@@ -2921,6 +3068,8 @@
             log('contentLayout: NoSubfolder');
             log('Добавление через кнопку «Папка» на паузе включено');
             log('Ожидание метаданных magnet включено');
+            log('Ожидание метаданных: до 120 секунд');
+            log('Защита от повторных циклов ожидания включена');
             log('Загрузка выбранного файла включена');
             log('Использование index qBittorrent API включено');
             log('Поддержка фокуса Android TV включена');
