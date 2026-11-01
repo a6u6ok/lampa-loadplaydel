@@ -622,7 +622,7 @@
     // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ (МОДАЛКА СЕРИЙ)
     // ========================================================================
 
-        function renderTorrentFiles(hash, torrent, files) {
+            function renderTorrentFiles(hash, torrent, files) {
         if (!window.Lampa || !Lampa.Modal) { notify('Окно файлов недоступно'); return; }
         var videoFiles = files.filter(function (file) { return isVideoFile(file.name); });
         videoFiles.sort(compareVideoFiles);
@@ -670,10 +670,9 @@
             '<div class="qbit-files__warning">«Исключить» отключает загрузку файла. Уже скачанный файл физически не удаляется.</div>' +
             '<button class="qbit-files__refresh">Обновить список</button></div>';
 
-        // Формируем итоговую HTML-строку
+        // Передаем в Lampa.Modal.open СТРОКУ, а не DOM-элемент
         var htmlContent = '<div class="qbit-files">' + header + list + footer + '</div>';
 
-        // Открываем модалку, передавая строку, а не DOM-элемент
         Lampa.Modal.open({
             title: 'Файлы торрента',
             html: htmlContent,
@@ -683,7 +682,7 @@
             }
         });
 
-        // Привязываем обработчики к кнопкам после открытия окна
+        // Привязываем обработчики после того, как окно отрисовалось
         setTimeout(function () {
             var $html = window.jQuery('.modal .qbit-files');
             if (!$html.length) return;
