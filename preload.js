@@ -1379,25 +1379,95 @@
                     return;
                 }
 
-                // Ищем полностью загруженные видео.
-                var videoFiles = files.filter(function (file) {
-                    return (
-                        isVideoFile(file.name) &&
-                        Number(file.progress) >= 0.999999
-                    );
-                });
+                // ------------------------------------------------
+// ВЫБОР ПЕРВОЙ СЕРИИ СЕРИАЛА
+// ------------------------------------------------
 
-                if (!videoFiles.length) {
-                    notify('Нет полностью скачанных видеофайлов');
-                    return;
-                }
+function getEpisodeInfo(filename) {
+    var name = String(filename || '')
+        .replace(/\\/g, '/')
+        .split('/')
+        .pop();
 
-                // Самое большое видео первым.
-                videoFiles.sort(function (a, b) {
-                    return Number(b.size) - Number(a.size);
-                });
+    var patterns = [
+        /S(\d{1,2})E(\d{1,3})/i,
+        /(\d{1,2})x(\d{1,3})/i,
+        /Season[\s._-]*(\d{1,2})[\s._-]*Episode[\s._-]*(\d{1,3})/i
+    ];
 
-                var selectedFile = videoFiles[0];
+    for (var i = 0; i < patterns.length; i++) {
+        var match = patterns[i].exec(name);
+
+        if (match) {
+            return {
+                season: Number(match[1]),
+                episode: Number(match[2]),
+                found: true
+            };
+        }
+    }
+
+    return {
+        season: 0,
+        episode: 0,
+        found: false
+    };
+}
+
+// Отбираем полностью загруженные видео.
+var videoFiles = files.filter(function (file) {
+    var name = String(file.name || '').toLowerCase();
+
+    if (!isVideoFile(name)) return false;
+
+    if (Number(file.progress) < 0.999999) return false;
+
+    if (/sample|trailer|preview|прочее/i.test(name)) {
+        return false;
+    }
+
+    return true;
+});
+
+if (!videoFiles.length) {
+    notify('Нет полностью скачанных видеофайлов');
+    return;
+}
+
+// Сортировка по сезону и номеру серии.
+videoFiles.sort(function (a, b) {
+    var infoA = getEpisodeInfo(a.name);
+    var infoB = getEpisodeInfo(b.name);
+
+    // Если у обоих файлов определены номера серий.
+    if (infoA.found && infoB.found) {
+        if (infoA.season !== infoB.season) {
+            return infoA.season - infoB.season;
+        }
+
+        if (infoA.episode !== infoB.episode) {
+            return infoA.episode - infoB.episode;
+        }
+    }
+
+    // Если номера серий отсутствуют или одинаковы,
+    // используем естественную сортировку названий.
+    return String(a.name).localeCompare(
+        String(b.name),
+        undefined,
+        {
+            numeric: true,
+            sensitivity: 'base'
+        }
+    );
+});
+
+// Выбираем первую серию.
+var selectedFile = videoFiles[0];
+
+log('Всего видео:', videoFiles.length);
+log('Первая серия:', selectedFile.name);
+log('Номер серии:', getEpisodeInfo(selectedFile.name).episode);
 
                 var fileTitle = String(selectedFile.name)
                     .replace(/\\/g, '/')
