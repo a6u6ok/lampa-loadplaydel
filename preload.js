@@ -21,7 +21,6 @@
     var VERIFY_INTERVAL = 1500;
     var VERIFY_ATTEMPTS = 40;
 
-    // Ожидание метаданных magnet: 80 проверок × 1,5 секунды = около 120 секунд.
     var METADATA_ATTEMPTS = 80;
     var METADATA_INTERVAL = 1500;
 
@@ -31,9 +30,8 @@
 
     var activeFileModalHash = '';
     var fileModalRequestId = 0;
+    var activeFileKeyHandler = null;
 
-    // Один цикл ожидания метаданных на один hash.
-    // Повторные нажатия подключаются к уже выполняющемуся ожиданию.
     var metadataWaits = {};
 
     var CT_FORM = {
@@ -885,8 +883,69 @@
         );
     }
 
-    // Добавление именно для кнопки «Папка».
-    // Торрент добавляется на паузе: все серии не начинают скачиваться.
+    // ========================================================================
+    // ВОЗОБНОВЛЕНИЕ И ПАУЗА ТОРРЕНТА
+    // ========================================================================
+
+    function resumeTorrent(hash, callback) {
+        qbPost(
+            '/api/v2/torrents/resume',
+            'hashes=' + encodeURIComponent(hash),
+            function (response) {
+                var success = (
+                    response !== null &&
+                    response !== undefined &&
+                    !/Forbidden|403|Fails|Errored/i.test(String(response))
+                );
+
+                if (!success) {
+                    notify('Не удалось запустить загрузку торрента');
+                }
+
+                if (callback) callback(success);
+            }
+        );
+    }
+
+    function pauseTorrent(hash, callback) {
+        qbPost(
+            '/api/v2/torrents/pause',
+            'hashes=' + encodeURIComponent(hash),
+            function (response) {
+                var success = (
+                    response !== null &&
+                    response !== undefined &&
+                    !/Forbidden|403|Fails|Errored/i.test(String(response))
+                );
+
+                if (!success) {
+                    log('Не удалось поставить торрент на паузу:', response);
+                } else {
+                    log('Торрент поставлен на паузу:', hash);
+                }
+
+                if (callback) callback(success);
+            }
+        );
+    }
+
+    function isTorrentPaused(torrent) {
+        if (!torrent) return false;
+
+        var state = String(torrent.state || '').toLowerCase();
+
+        return (
+            state.indexOf('paused') === 0 ||
+            state.indexOf('stopped') === 0 ||
+            state === 'queueddl' ||
+            state === 'queuedup'
+        );
+    }
+
+    // ========================================================================
+    // ДОБАВЛЕНИЕ ТОРРЕНТА ДЛЯ КНОПКИ «ПАПКА»
+    // ========================================================================
+
     function qbAddPaused(magnet, title, callback) {
         if (!magnet || !/^magnet:\?/i.test(magnet)) {
             notify('В карточке нет magnet-ссылки');
@@ -905,15 +964,26 @@
         getTorrentInfo(hash, function (existingTorrent) {
             if (existingTorrent) {
                 log('Торрент уже существует, повторно не добавляю');
-                waitForTorrentMetadata(hash, 0, callback);
+
+                waitForTorrentMetadata(
+                    hash,
+                    0,
+                    callback,
+                    { pauseOnReady: false }
+                );
+
                 return;
             }
 
-            notify('Добавляю торрент на паузе...');
+            notify('Добавляю торрент и получаю метаданные...');
 
+            // ВАЖНО:
+            // Magnet на паузе может не получать metadata.
+            // Поэтому сначала добавляем активным, а после получения
+            // списка файлов автоматически ставим его на паузу.
             qbPost(
                 '/api/v2/torrents/add',
-                buildAddBody(magnet, title, true),
+                buildAddBody(magnet, title, false),
                 function (response) {
                     if (response === null || response === undefined) {
                         notify('Нет ответа от qBittorrent');
@@ -921,37 +991,28 @@
                         return;
                     }
 
-                    if (/Forbidden|403|Errored/i.test(response)) {
+                    if (/Forbidden|403|Errored/i.test(String(response))) {
                         notify('Ошибка добавления торрента: ' + response);
                         callback(false);
                         return;
                     }
 
-                    log('Ответ добавления на паузе:', response);
+                    log('Торрент добавлен для получения metadata:', response);
 
-                    waitForTorrentMetadata(hash, 0, callback);
+                    waitForTorrentMetadata(
+                        hash,
+                        0,
+                        callback,
+                        { pauseOnReady: true }
+                    );
                 }
             );
         });
     }
-        // ========================================================================
-    // ОЖИДАНИЕ ТОРРЕНТА И МЕТАДАННЫХ
-    // ========================================================================
 
-    /*
-     * Важное исправление:
-     *
-     * Раньше ожидание метаданных и повторный запрос файлов запускали
-     * вложенные циклы. Из-за этого кнопка могла долго показывать
-     * «Получаю список серий...» и не открывать окно.
-     *
-     * Теперь используется один цикл:
-     * 1. Проверяем наличие торрента.
-     * 2. Проверяем hasMetadata.
-     * 3. Запрашиваем список файлов.
-     * 4. Если файлов пока нет — повторяем проверку.
-     * 5. При успехе или ошибке завершаем ожидание и сбрасываем состояние.
-     */
+    // ========================================================================
+    // ОЖИДАНИЕ ТОРРЕНТА И METADATA
+    // ========================================================================
 
     function finishMetadataWait(hash, success, torrent, files) {
         var key = String(hash || '').toLowerCase();
@@ -963,7 +1024,6 @@
         delete metadataWaits[key];
 
         var callbacks = state.callbacks.slice();
-
         state.callbacks = [];
 
         log(
@@ -991,9 +1051,10 @@
         });
     }
 
-    function waitForTorrentMetadata(hash, attempt, callback) {
+    function waitForTorrentMetadata(hash, attempt, callback, options) {
         hash = String(hash || '').trim().toLowerCase();
         attempt = Number(attempt) || 0;
+        options = options || {};
 
         if (!hash) {
             if (typeof callback === 'function') callback(false);
@@ -1002,11 +1063,15 @@
 
         var key = hash;
 
-        // Если ожидание уже выполняется, добавляем callback
-        // к существующему процессу вместо запуска второго цикла.
         if (metadataWaits[key]) {
             if (typeof callback === 'function') {
                 metadataWaits[key].callbacks.push(callback);
+            }
+
+            // Если один из вызовов требует поставить новый торрент
+            // на паузу после получения metadata, сохраняем это требование.
+            if (options.pauseOnReady) {
+                metadataWaits[key].pauseOnReady = true;
             }
 
             log('Ожидание уже выполняется для:', hash);
@@ -1016,7 +1081,10 @@
         metadataWaits[key] = {
             callbacks: typeof callback === 'function' ? [callback] : [],
             finished: false,
-            attempt: attempt
+            attempt: attempt,
+            pauseOnReady: !!options.pauseOnReady,
+            resumedForMetadata: false,
+            resuming: false
         };
 
         notify('Получаю список серий...');
@@ -1053,31 +1121,129 @@
             }, METADATA_INTERVAL);
         }
 
+        function finishWithFiles(torrent, files) {
+            var state = metadataWaits[key];
+
+            if (!state || state.finished) return;
+
+            // Если торрент был добавлен специально для просмотра списка,
+            // или мы временно возобновляли его ради metadata, останавливаем
+            // загрузку после получения списка файлов.
+            if (
+                state.pauseOnReady &&
+                state.resumedForMetadata
+            ) {
+                pauseTorrent(key, function (paused) {
+                    var latest = metadataWaits[key];
+
+                    if (!latest || latest.finished) return;
+
+                    if (!paused) {
+                        log('Предупреждение: не удалось остановить торрент');
+                    }
+
+                    finishMetadataWait(
+                        key,
+                        true,
+                        torrent,
+                        files
+                    );
+                });
+
+                return;
+            }
+
+            if (state.pauseOnReady) {
+                pauseTorrent(key, function (paused) {
+                    var latest = metadataWaits[key];
+
+                    if (!latest || latest.finished) return;
+
+                    if (!paused) {
+                        log('Предупреждение: не удалось остановить торрент');
+                    }
+
+                    finishMetadataWait(
+                        key,
+                        true,
+                        torrent,
+                        files
+                    );
+                });
+
+                return;
+            }
+
+            finishMetadataWait(key, true, torrent, files);
+        }
+
         function checkMetadata() {
             var state = metadataWaits[key];
 
             if (!state || state.finished) return;
 
             getTorrentInfo(key, function (torrent) {
-                var currentState = metadataWaits[key];
+                var current = metadataWaits[key];
 
-                if (!currentState || currentState.finished) return;
+                if (!current || current.finished) return;
 
                 if (!torrent) {
                     retry('торрент пока не найден');
                     return;
                 }
 
-                // hasMetadata=false означает, что magnet ещё
-                // не получил метаданные от раздающих.
-                if (torrent.hasMetadata === false) {
-                    retry('qBittorrent получает метаданные magnet');
+                var hasMetadata =
+                    torrent.has_metadata !== undefined ?
+                        torrent.has_metadata :
+                        torrent.hasMetadata;
+
+                var metadataMissing = (
+                    hasMetadata === false ||
+                    String(torrent.state || '').toLowerCase() === 'metadl'
+                );
+
+                // Если magnet остановлен и ещё не получил metadata,
+                // временно запускаем его. После появления файлов
+                // он будет автоматически поставлен на паузу.
+                if (
+                    metadataMissing &&
+                    isTorrentPaused(torrent) &&
+                    !current.resuming
+                ) {
+                    current.resuming = true;
+
+                    log(
+                        'Торрент остановлен без metadata. Возобновляю:',
+                        torrent.state
+                    );
+
+                    resumeTorrent(key, function (success) {
+                        var latest = metadataWaits[key];
+
+                        if (!latest || latest.finished) return;
+
+                        latest.resuming = false;
+
+                        if (success) {
+                            latest.resumedForMetadata = true;
+                            latest.pauseOnReady = true;
+                        }
+
+                        retry(
+                            success ?
+                                'возобновлён, ожидаю metadata' :
+                                'не удалось возобновить торрент'
+                        );
+                    });
+
                     return;
                 }
 
-                // Даже если hasMetadata отсутствует в ответе API,
-                // окончательным признаком готовности считаем наличие
-                // реального списка файлов.
+                if (metadataMissing) {
+                    retry('qBittorrent получает metadata magnet');
+                    return;
+                }
+
                 requestTorrentFiles(key, 0, function (files) {
                     var latestState = metadataWaits[key];
 
@@ -1094,12 +1260,43 @@
                             files.length
                         );
 
-                        finishMetadataWait(
-                            key,
-                            true,
-                            torrent,
-                            files
+                        finishWithFiles(torrent, files);
+                        return;
+                    }
+
+                    // В некоторых версиях qBittorrent поле metadata
+                    // может отсутствовать. Поэтому проверяем и пустой
+                    // список файлов, и состояние самого торрента.
+                    if (
+                        isTorrentPaused(torrent) &&
+                        !latestState.resuming
+                    ) {
+                        latestState.resuming = true;
+
+                        log(
+                            'Список файлов пуст, торрент остановлен. ' +
+                            'Пробую возобновить:',
+                            torrent.state
                         );
+
+                        resumeTorrent(key, function (success) {
+                            var currentState = metadataWaits[key];
+
+                            if (!currentState || currentState.finished) return;
+
+                            currentState.resuming = false;
+
+                            if (success) {
+                                currentState.resumedForMetadata = true;
+                                currentState.pauseOnReady = true;
+                            }
+
+                            retry(
+                                success ?
+                                    'ожидание файлов после возобновления' :
+                                    'не удалось возобновить торрент'
+                            );
+                        });
 
                         return;
                     }
@@ -1111,31 +1308,6 @@
 
         checkMetadata();
     }
-
-    // ========================================================================
-    // ВОЗОБНОВЛЕНИЕ ТОРРЕНТА
-    // ========================================================================
-
-    function resumeTorrent(hash, callback) {
-        qbPost(
-            '/api/v2/torrents/resume',
-            'hashes=' + encodeURIComponent(hash),
-            function (response) {
-                var success = (
-                    response !== null &&
-                    response !== undefined &&
-                    !/Forbidden|403|Fails|Errored/i.test(response)
-                );
-
-                if (!success) {
-                    notify('Не удалось запустить загрузку торрента');
-                }
-
-                if (callback) callback(success);
-            }
-        );
-    }
-
     // ========================================================================
     // УДАЛЕНИЕ ВСЕГО ТОРРЕНТА
     // ========================================================================
@@ -1160,14 +1332,12 @@
                 return;
             }
 
-            if (/Forbidden|403|Fails/i.test(response)) {
+            if (/Forbidden|403|Fails/i.test(String(response))) {
                 notify('Ошибка удаления торрента');
                 if (onComplete) onComplete(false);
                 return;
             }
 
-            // Если торрент удалили во время ожидания метаданных,
-            // завершаем ожидание, чтобы не оставлять зависшее состояние.
             var key = String(hash).toLowerCase();
 
             if (metadataWaits[key]) {
@@ -1204,7 +1374,7 @@
             var success = (
                 response !== null &&
                 response !== undefined &&
-                !/Forbidden|403|Fails|Errored/i.test(response)
+                !/Forbidden|403|Fails|Errored/i.test(String(response))
             );
 
             if (callback) callback(success, response);
@@ -1239,8 +1409,6 @@
                     return;
                 }
 
-                // Снимаем паузу только после назначения приоритетов.
-                // Остальные файлы к этому моменту исключены.
                 resumeTorrent(hash, function (resumed) {
                     if (resumed) {
                         notify(
@@ -1340,7 +1508,6 @@
             .replace(/\\/g, '/')
             .replace(/\/+$/, '');
 
-        // Сохраняем относительные подпапки внутри торрента.
         var file = cleanFsPath(fileName).replace(/^\/+/, '');
 
         var result = smbRoot +
@@ -1561,12 +1728,6 @@
     // ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
     // ========================================================================
 
-    /*
-     * Здесь намеренно оставлен один HTTP-запрос.
-     * Повторные попытки выполняет waitForTorrentMetadata().
-     * Это исключает вложенные циклы ожидания.
-     */
-
     function requestTorrentFiles(hash, attempt, callback) {
         if (!hash) {
             callback(null);
@@ -1613,7 +1774,257 @@
     }
 
     // ========================================================================
-    // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ
+    // ЗАКРЫТИЕ ОБРАБОТЧИКА НАВИГАЦИИ СПИСКА ФАЙЛОВ
+    // ========================================================================
+
+    function removeFileModalNavigation() {
+        if (activeFileKeyHandler) {
+            try {
+                document.removeEventListener(
+                    'keydown',
+                    activeFileKeyHandler,
+                    true
+                );
+            } catch (error) {}
+
+            activeFileKeyHandler = null;
+        }
+    }
+
+    // ========================================================================
+    // ПРОКРУТКА К АКТИВНОЙ КНОПКЕ
+    // ========================================================================
+
+    function scrollFileButtonIntoView(button, container) {
+        if (!button || !container) return;
+
+        var list = container.querySelector('.qbit-files__list');
+        var scrollContainer = list || container;
+
+        try {
+            var buttonRect = button.getBoundingClientRect();
+            var containerRect = scrollContainer.getBoundingClientRect();
+
+            if (
+                buttonRect.top < containerRect.top ||
+                buttonRect.bottom > containerRect.bottom
+            ) {
+                var offset =
+                    buttonRect.top -
+                    containerRect.top -
+                    (containerRect.height / 2) +
+                    (buttonRect.height / 2);
+
+                scrollContainer.scrollTop += offset;
+            }
+        } catch (error) {
+            try {
+                button.scrollIntoView({
+                    block: 'nearest',
+                    inline: 'nearest'
+                });
+            } catch (scrollError) {}
+        }
+    }
+
+    // ========================================================================
+    // УПРАВЛЕНИЕ ПУЛЬТОМ ANDROID TV
+    // ========================================================================
+
+    function installFileModalNavigation(container) {
+        removeFileModalNavigation();
+
+        if (!container) return;
+
+        function getButtons() {
+            return Array.prototype.slice.call(
+                container.querySelectorAll(
+                    '.qbit-file__button.selector:not(:disabled), ' +
+                    '.qbit-files__refresh.selector:not(:disabled)'
+                )
+            );
+        }
+
+        function getCurrentIndex(buttons) {
+            var active = document.activeElement;
+
+            for (var i = 0; i < buttons.length; i++) {
+                if (
+                    buttons[i] === active ||
+                    buttons[i].classList.contains('focus')
+                ) {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        activeFileKeyHandler = function (event) {
+            if (!activeFileModalHash) return;
+
+            if (
+                !document.body.contains(container) ||
+                !container.querySelector('.qbit-files__list')
+            ) {
+                removeFileModalNavigation();
+                return;
+            }
+
+            var key = event.key || '';
+            var code = Number(event.keyCode || event.which || 0);
+
+            var direction = 0;
+            var page = false;
+            var edge = '';
+
+            if (
+                key === 'ArrowDown' ||
+                key === 'Down' ||
+                code === 40 ||
+                code === 20
+            ) {
+                direction = 1;
+            } else if (
+                key === 'ArrowUp' ||
+                key === 'Up' ||
+                code === 38 ||
+                code === 19
+            ) {
+                direction = -1;
+            } else if (
+                key === 'PageDown' ||
+                code === 34
+            ) {
+                direction = 1;
+                page = true;
+            } else if (
+                key === 'PageUp' ||
+                code === 33
+            ) {
+                direction = -1;
+                page = true;
+            } else if (key === 'Home' || code === 36) {
+                edge = 'first';
+            } else if (key === 'End' || code === 35) {
+                edge = 'last';
+            } else {
+                return;
+            }
+
+            var buttons = getButtons();
+
+            if (!buttons.length) return;
+
+            var currentIndex = getCurrentIndex(buttons);
+            var nextIndex = currentIndex;
+
+            if (edge === 'first') {
+                nextIndex = 0;
+            } else if (edge === 'last') {
+                nextIndex = buttons.length - 1;
+            } else if (currentIndex === -1) {
+                nextIndex = direction > 0 ? 0 : buttons.length - 1;
+            } else if (page) {
+                var pageStep = Math.max(
+                    1,
+                    Math.floor(buttons.length / 5)
+                );
+
+                nextIndex = currentIndex + direction * pageStep;
+            } else {
+                nextIndex = currentIndex + direction;
+            }
+
+            nextIndex = Math.max(
+                0,
+                Math.min(buttons.length - 1, nextIndex)
+            );
+
+            if (nextIndex === currentIndex) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (event.stopImmediatePropagation) {
+                    event.stopImmediatePropagation();
+                }
+
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (event.stopImmediatePropagation) {
+                event.stopImmediatePropagation();
+            }
+
+            var target = buttons[nextIndex];
+
+            if (!target) return;
+
+            try {
+                target.focus();
+            } catch (error) {}
+
+            buttons.forEach(function (button) {
+                button.classList.remove('focus');
+            });
+
+            target.classList.add('focus');
+
+            scrollFileButtonIntoView(target, container);
+        };
+
+        document.addEventListener(
+            'keydown',
+            activeFileKeyHandler,
+            true
+        );
+    }
+
+    // ========================================================================
+    // ФОКУС ПЕРВОЙ КНОПКИ
+    // ========================================================================
+
+    function focusFirstFileButton(container) {
+        if (!container) return;
+
+        setTimeout(function () {
+            var buttons = container.querySelectorAll(
+                '.qbit-file__button.selector:not(:disabled), ' +
+                '.qbit-files__refresh.selector:not(:disabled)'
+            );
+
+            if (!buttons.length) return;
+
+            try {
+                buttons[0].focus();
+                buttons[0].classList.add('focus');
+            } catch (error) {}
+
+            try {
+                if (
+                    window.Lampa &&
+                    Lampa.Controller &&
+                    typeof Lampa.Controller.collectionFocus === 'function'
+                ) {
+                    Lampa.Controller.collectionFocus(
+                        false,
+                        '.qbit-file__button.selector:not(:disabled), ' +
+                        '.qbit-files__refresh.selector:not(:disabled)'
+                    );
+                }
+            } catch (error) {
+                log('Не удалось установить фокус:', error);
+            }
+
+            scrollFileButtonIntoView(buttons[0], container);
+        }, 200);
+    }
+
+    // ========================================================================
+    // ОБНОВЛЕНИЕ ОКНА ФАЙЛОВ
     // ========================================================================
 
     function refreshFileModal(hash) {
@@ -1641,42 +2052,6 @@
     }
 
     // ========================================================================
-    // ФОКУС И УПРАВЛЕНИЕ ПУЛЬТОМ
-    // ========================================================================
-
-    function focusFirstFileButton(container) {
-        if (!container) return;
-
-        setTimeout(function () {
-            var buttons = container.querySelectorAll(
-                '.qbit-file__button.selector:not(:disabled), ' +
-                '.qbit-files__refresh.selector'
-            );
-
-            if (!buttons.length) return;
-
-            try {
-                buttons[0].focus();
-            } catch (error) {}
-
-            try {
-                if (
-                    window.Lampa &&
-                    Lampa.Controller &&
-                    typeof Lampa.Controller.collectionFocus === 'function'
-                ) {
-                    Lampa.Controller.collectionFocus(
-                        false,
-                        '.qbit-file__button.selector:not(:disabled), ' +
-                        '.qbit-files__refresh.selector'
-                    );
-                }
-            } catch (error) {
-                log('Не удалось установить фокус:', error);
-            }
-        }, 150);
-    }
-        // ========================================================================
     // ОТРИСОВКА СПИСКА ФАЙЛОВ
     // ========================================================================
 
@@ -1832,6 +2207,8 @@
         html.innerHTML = header + list + footer;
 
         if (isRefresh && activeFileModalHash === hash) {
+            removeFileModalNavigation();
+
             try {
                 Lampa.Modal.close();
             } catch (error) {}
@@ -1846,17 +2223,27 @@
             align: 'top',
             mask: true,
             onBack: function () {
+                removeFileModalNavigation();
+
                 activeFileModalHash = '';
                 fileModalRequestId++;
 
                 Lampa.Modal.close();
-                Lampa.Controller.toggle('content');
+
+                if (
+                    window.Lampa &&
+                    Lampa.Controller &&
+                    typeof Lampa.Controller.toggle === 'function'
+                ) {
+                    Lampa.Controller.toggle('content');
+                }
             }
         });
 
         var $html = window.jQuery(html);
 
         focusFirstFileButton(html);
+        installFileModalNavigation(html);
 
         // ------------------------------------------------
         // Скачать отдельную серию
@@ -1957,11 +2344,12 @@
             function (event) {
                 event.preventDefault();
                 event.stopPropagation();
+
+                removeFileModalNavigation();
                 refreshFileModal(hash);
             }
         );
     }
-
     // ========================================================================
     // КНОПКА «ПАПКА»
     // ========================================================================
@@ -1997,13 +2385,10 @@
 
         debugNotify('Проверяю торрент в qBittorrent...');
 
-        // Сначала проверяем, есть ли торрент в qBittorrent.
         getTorrentInfo(hash, function (torrent) {
             if (torrent) {
                 log('Торрент уже находится в qBittorrent:', torrent.name);
 
-                // Не запрашиваем файлы один раз и не завершаем работу,
-                // если qBittorrent ещё получает magnet metadata.
                 waitForTorrentMetadata(
                     hash,
                     0,
@@ -2022,7 +2407,6 @@
                 return;
             }
 
-            // Если торрента нет, для добавления нужна magnet-ссылка.
             if (!magnet) {
                 notify(
                     'Торрент отсутствует в qBittorrent, ' +
@@ -2031,7 +2415,7 @@
                 return;
             }
 
-            log('Торрент отсутствует. Добавляю на паузе.');
+            log('Торрент отсутствует. Добавляю для получения metadata.');
 
             qbAddPaused(
                 magnet,
@@ -2049,8 +2433,6 @@
                         return;
                     }
 
-                    // Дополнительная проверка на случай, если callback
-                    // пришёл без списка файлов.
                     waitForTorrentMetadata(
                         hash,
                         0,
@@ -2163,6 +2545,7 @@
             if (event) {
                 if (event.preventDefault) event.preventDefault();
                 if (event.stopPropagation) event.stopPropagation();
+
                 if (event.stopImmediatePropagation) {
                     event.stopImmediatePropagation();
                 }
@@ -2852,15 +3235,27 @@
                 'font-style:italic;' +
             '}' +
 
+            // ------------------------------------------------
+            // Контейнер списка файлов
+            // ------------------------------------------------
+
             '.qbit-files {' +
                 'width:100%;' +
-                'max-height:75vh;' +
-                'overflow-y:auto;' +
+                'height:auto;' +
+                'max-height:75vh !important;' +
+                'overflow-y:auto !important;' +
+                'overflow-x:hidden !important;' +
+                'overscroll-behavior:contain;' +
+                '-webkit-overflow-scrolling:touch;' +
+                'scroll-behavior:smooth;' +
                 'box-sizing:border-box;' +
                 'padding:16px;' +
+                'outline:none;' +
             '}' +
 
-            '.qbit-files__header {margin-bottom:14px;}' +
+            '.qbit-files__header {' +
+                'margin-bottom:14px;' +
+            '}' +
 
             '.qbit-files__torrent {' +
                 'font-size:15px;' +
@@ -2880,12 +3275,32 @@
                 'opacity:0.6;' +
             '}' +
 
+            // ------------------------------------------------
+            // Отдельная прокручиваемая область серий
+            // ------------------------------------------------
+
+            '.qbit-files__list {' +
+                'display:block;' +
+                'width:100%;' +
+                'max-height:calc(75vh - 190px);' +
+                'overflow-y:auto !important;' +
+                'overflow-x:hidden !important;' +
+                'overscroll-behavior:contain;' +
+                '-webkit-overflow-scrolling:touch;' +
+                'scroll-behavior:smooth;' +
+                'box-sizing:border-box;' +
+                'padding:2px 5px 8px 2px;' +
+                'outline:none;' +
+            '}' +
+
             '.qbit-file {' +
                 'display:flex;' +
                 'flex-direction:column;' +
                 'gap:9px;' +
                 'padding:12px 0;' +
                 'border-top:1px solid rgba(128,128,128,0.25);' +
+                'scroll-margin-top:12px;' +
+                'scroll-margin-bottom:12px;' +
             '}' +
 
             '.qbit-file__name {' +
@@ -2929,13 +3344,15 @@
             '.qbit-file__button, .qbit-files__refresh {' +
                 'border:0;' +
                 'border-radius:5px;' +
-                'padding:8px 12px;' +
+                'padding:9px 13px;' +
+                'min-height:38px;' +
                 'font-size:12px;' +
                 'color:#fff;' +
                 'background:#555;' +
                 'cursor:pointer;' +
                 'outline:none;' +
                 'transition:transform 0.15s, box-shadow 0.15s;' +
+                'scroll-margin:16px;' +
             '}' +
 
             '.qbit-file__button.selector, .qbit-files__refresh.selector {' +
@@ -2980,6 +3397,10 @@
                 'width:100%;' +
                 'padding:10px;' +
             '}' +
+
+            // ------------------------------------------------
+            // Мастер настройки
+            // ------------------------------------------------
 
             '.qbit-wizard {padding:20px;}' +
 
@@ -3066,13 +3487,13 @@
             log('Пакет плеера:', cfg().player_package);
 
             log('contentLayout: NoSubfolder');
-            log('Добавление через кнопку «Папка» на паузе включено');
-            log('Ожидание метаданных magnet включено');
-            log('Ожидание метаданных: до 120 секунд');
+            log('Получение metadata magnet с последующей паузой включено');
+            log('Ожидание metadata: до 120 секунд');
             log('Защита от повторных циклов ожидания включена');
             log('Загрузка выбранного файла включена');
             log('Использование index qBittorrent API включено');
-            log('Поддержка фокуса Android TV включена');
+            log('Навигация пультом Android TV включена');
+            log('Автоматическая прокрутка списка серий включена');
             log('Плагин загружен');
         } catch (error) {
             console.error('[qBittorrent] Initialization:', error);
