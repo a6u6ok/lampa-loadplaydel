@@ -15,7 +15,7 @@
     var EXAMPLE_SAVEPATH = '/mnt/storage/torrents';
     var EXAMPLE_SMB_FILE = 'smb://192.168.1.1/MEDIA/';
 
-    var DEBUG = true;
+    var DEBUG = false;
     var ACTION_LOCK_MS = 800;
     var POLL_INTERVAL = 3000;
     var VERIFY_INTERVAL = 1000;
@@ -608,7 +608,6 @@
                 callback(null);
             });
     }
-
     function nativeRequest(request, callback) {
         var finished = false;
         var requestId = ++nativeRequestId;
@@ -628,14 +627,6 @@
 
             finished = true;
             callback(normalizeResponse(response));
-        }
-
-        function fallback() {
-            if (finished) return;
-
-            finished = true;
-            log('Переключение на fetch');
-            fetchRequest(request, callback);
         }
 
         if (
@@ -658,6 +649,8 @@
             return;
         }
 
+        // После отправки запроса повторно его не отправляем: торрент
+        // могло добавить или удалить уже первое обращение.
         var tries = 0;
 
         (function poll() {
@@ -683,7 +676,7 @@
             }
 
             if (tries >= 150) {
-                fallback();
+                finish(null);
                 return;
             }
 
@@ -745,12 +738,31 @@
         });
     }
 
-    function qbRequest(request, callback) {
+    function qbRequest(request, callback, isRetry) {
         var config = cfg();
 
         if (config.bypass || !config.user) {
             nativeRequest(request, callback);
             return;
+        }
+
+        function send() {
+            request.headers = authHeaders();
+
+            nativeRequest(request, function (response) {
+                var sessionExpired =
+                    response === null ||
+                    /Forbidden|403/i.test(String(response));
+
+                if (sessionExpired && !isRetry) {
+                    loggedIn = false;
+                    sid = '';
+                    qbRequest(request, callback, true);
+                    return;
+                }
+
+                callback(response);
+            });
         }
 
         if (!loggedIn) {
@@ -760,15 +772,13 @@
                     return;
                 }
 
-                request.headers = authHeaders();
-                nativeRequest(request, callback);
+                send();
             });
 
             return;
         }
 
-        request.headers = authHeaders();
-        nativeRequest(request, callback);
+        send();
     }
 
     function qbGet(path, callback) {
@@ -1440,7 +1450,6 @@
             container.scrollTop += delta;
         }
     }
-
     // ========================================================================
     // ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
     // ========================================================================
@@ -1968,7 +1977,6 @@
                     'M19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>' +
                     '</svg>';
 
-
                 // ------------------------------------------------
                 // Кнопка плеера
                 // ------------------------------------------------
@@ -2085,7 +2093,6 @@
 
                 deleteButton.title = 'Удалить торрент';
 
-
                 // ------------------------------------------------
                 // Восстановление прогресса
                 // ------------------------------------------------
@@ -2107,6 +2114,7 @@
                 actions.appendChild(playerButton);
                 actions.appendChild(deleteButton);
 
+                container.classList.add('qbit-direct-host');
                 container.appendChild(actions);
             } catch (error) {
                 console.error(
@@ -2171,7 +2179,7 @@
         style.id = 'qbit-direct-style';
 
         style.textContent =
-            '.torrent-item, .torrent-item__right {' +
+            '.qbit-direct-host {' +
                 'position:relative;' +
                 'margin-right:32px !important;' +
             '}' +
