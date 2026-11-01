@@ -812,20 +812,18 @@
             // Запускаем цикл запроса файлов, пока они не появятся
             requestTorrentFiles(actualHash, 0, function (files) {
                 if (!files || !files.length) {
-                    // Если файлов нет, открываем окно с сообщением
-                    var html = document.createElement('div');
-                    html.innerHTML = '<div style="padding:20px;text-align:center;">' +
+                    // Если файлов нет, передаем СТРОКУ, а не DOM-элемент
+                    var emptyHtml = '<div style="padding:20px;text-align:center;">' +
                         '<div style="font-size:16px;margin-bottom:10px;">Список файлов пуст</div>' +
                         '<div style="font-size:13px;opacity:0.7;">qBittorrent ещё не скачал метаданные этого торрента. Подождите немного и попробуйте снова.</div>' +
                         '</div>';
                     Lampa.Modal.open({
                         title: 'Файлы торрента',
-                        html: html,
+                        html: emptyHtml,
                         size: 'medium'
                     });
                     return;
                 }
-
                 // Если файлы есть, рисуем окно со списком
                 renderTorrentFiles(actualHash, torrent, files);
             });
