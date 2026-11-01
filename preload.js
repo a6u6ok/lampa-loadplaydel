@@ -423,7 +423,10 @@
                     'Отмена' +
                 '</button>' +
             '</div>';
-
+if (!window.jQuery) {
+    notify('Не удалось открыть настройки: jQuery недоступен');
+    return;
+}
               Lampa.Modal.open({
             title: 'qBittorrent — настройка',
             html: window.jQuery(html),
@@ -1490,7 +1493,10 @@
             '</div>';
 
         html.innerHTML = header + list + footer;
-
+if (!window.jQuery) {
+    notify('Не удалось открыть список файлов: jQuery недоступен');
+    return;
+}
                 Lampa.Modal.open({
             title: 'Файлы торрента',
             html: window.jQuery(html),
@@ -2637,10 +2643,12 @@
             '}' +
 
             '.qbit-files {' +
-                'padding:12px;' +
-                'max-height:75vh;' +
-                'overflow-y:auto;' +
-            '}' +
+    'width:100%;' +
+    'max-height:75vh;' +
+    'overflow-y:auto;' +
+    'box-sizing:border-box;' +
+    'padding:16px;' +
+'}' +
 
             '.qbit-files__header {' +
                 'margin-bottom:14px;' +
