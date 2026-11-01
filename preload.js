@@ -1383,8 +1383,7 @@
         var torrentName = torrent.name || 'Торрент';
 
         var header =
-            '<div class="qbit-files__header
-                 var header =
+            
             '<div class="qbit-files__header">' +
                 '<div class="qbit-files__torrent">' +
                     escapeHtml(torrentName) +
