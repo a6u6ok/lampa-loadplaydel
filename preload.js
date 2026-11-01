@@ -51,7 +51,8 @@
         'qbit_pass',
         'qbit_savepath',
         'qbit_category',
-        'qbit_smb_file'
+        'qbit_smb_file',
+        'qbit_player_package'
     ];
 
     var DEBUG = true;
@@ -173,7 +174,15 @@
                 storeGet('qbit_smb_torrent_folder', false), false
             ),
 
-            player_package: storeGet('qbit_player_package', ''),
+            external_player: isTrue(
+                storeGet('qbit_external_player', true), true
+            ),
+
+            player_package: storeGet(
+                'qbit_player_package',
+                'top.rootu.dddplayer'
+            ),
+
             smb_file: storeGet('qbit_smb_file', '')
         };
     }
@@ -1153,14 +1162,20 @@
 
         return result;
     }
-        // ========================================================================
+
+    // ========================================================================
     // ЗАПУСК ВИДЕО В LAMPA
     // ========================================================================
 
     function openFileInPlayer(fileUri, playerPkg, title) {
         var uri = String(fileUri || '').trim();
-
-        var pkg = String(playerPkg || '').trim();
+        var config = cfg();
+        var pkg = String(
+            playerPkg ||
+            config.player_package ||
+            'top.rootu.dddplayer'
+        ).trim();
+        var videoTitle = title || 'qBittorrent';
 
         if (!uri) {
             notify('Не указан путь к видеофайлу');
@@ -1168,7 +1183,6 @@
         }
 
         var extension = '';
-
         var match = /\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
 
         if (match) {
@@ -1177,16 +1191,89 @@
 
         var playerData = {
             url: uri,
-            title: title || 'qBittorrent',
+            title: videoTitle,
             source: 'qBittorrent',
             quality: 'auto',
             exe: extension
         };
 
         log('Запуск видео:', playerData);
+        log('Внешний плеер:', config.external_player ? pkg : 'выключен');
 
         // ------------------------------------------------
-        // 1. ВСТРОЕННЫЙ ПЛЕЕР LAMPA
+        // 1. ВНЕШНИЙ ПЛЕЕР (ПО УМОЛЧАНИЮ DDD PLAYER)
+        // ------------------------------------------------
+        // Внешний плеер вызывается раньше Lampa.Player.play(),
+        // чтобы встроенный плеер Lampa не перехватывал запуск.
+
+        if (config.external_player) {
+            var externalStarted = false;
+
+            try {
+                if (
+                    window.AndroidJS &&
+                    typeof window.AndroidJS.openPlayer === 'function'
+                ) {
+                    window.AndroidJS.openPlayer(
+                        uri,
+                        pkg,
+                        videoTitle,
+                        'video/*'
+                    );
+
+                    log('Видео передано AndroidJS.openPlayer:', pkg);
+                    externalStarted = true;
+                }
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] AndroidJS.openPlayer error:',
+                    error
+                );
+            }
+
+            if (!externalStarted) {
+                try {
+                    if (
+                        window.AndroidJS &&
+                        typeof window.AndroidJS.startActivity === 'function'
+                    ) {
+                        var intent = {
+                            action: 'android.intent.action.VIEW',
+                            data: uri,
+                            type: 'video/*',
+                            package: pkg,
+                            extras: {
+                                title: videoTitle,
+                                'android.intent.extra.TITLE': videoTitle
+                            }
+                        };
+
+                        window.AndroidJS.startActivity(
+                            JSON.stringify(intent)
+                        );
+
+                        log('Отправлен Android Intent:', intent);
+                        externalStarted = true;
+                    }
+                } catch (error) {
+                    console.error(
+                        '[qBittorrent] AndroidJS.startActivity error:',
+                        error
+                    );
+                }
+            }
+
+            if (externalStarted) return;
+
+            notify(
+                'Не удалось вызвать внешний плеер. ' +
+                'Проверьте AndroidJS и пакет: ' + pkg
+            );
+            return;
+        }
+
+        // ------------------------------------------------
+        // 2. ВСТРОЕННЫЙ ПЛЕЕР LAMPA
         // ------------------------------------------------
 
         try {
@@ -1196,9 +1283,7 @@
                 typeof Lampa.Player.play === 'function'
             ) {
                 Lampa.Player.play(playerData);
-
                 log('Видео передано Lampa.Player');
-
                 return;
             }
         } catch (error) {
@@ -1208,66 +1293,9 @@
             );
         }
 
-        // ------------------------------------------------
-        // 2. ANDROIDJS OPENPLAYER
-        // ------------------------------------------------
-
-        try {
-            if (
-                window.AndroidJS &&
-                typeof window.AndroidJS.openPlayer === 'function'
-            ) {
-                window.AndroidJS.openPlayer(
-                    uri,
-                    pkg,
-                    title || '',
-                    'video/*'
-                );
-
-                return;
-            }
-        } catch (error) {
-            console.error(
-                '[qBittorrent] AndroidJS error:',
-                error
-            );
-        }
-
-        // ------------------------------------------------
-        // 3. ANDROID INTENT
-        // ------------------------------------------------
-
-        try {
-            if (
-                window.AndroidJS &&
-                typeof window.AndroidJS.startActivity === 'function'
-            ) {
-                var intent = {
-                    action: 'android.intent.action.VIEW',
-                    data: uri,
-                    type: 'video/*'
-                };
-
-                if (pkg) {
-                    intent.package = pkg;
-                }
-
-                window.AndroidJS.startActivity(
-                    JSON.stringify(intent)
-                );
-
-                return;
-            }
-        } catch (error) {
-            console.error(
-                '[qBittorrent] startActivity error:',
-                error
-            );
-        }
-
-        notify('Не удалось запустить видеоплеер');
+        notify('Не удалось запустить встроенный плеер Lampa');
     }
-
+    
     // ========================================================================
     // ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК
     // ========================================================================
@@ -1373,94 +1401,94 @@
                 }
 
                 // ------------------------------------------------
-// ВЫБОР ПЕРВОЙ СЕРИИ СЕРИАЛА
-// ------------------------------------------------
+                // ВЫБОР ПЕРВОЙ СЕРИИ СЕРИАЛА
+                // ------------------------------------------------
 
-function getEpisodeInfo(filename) {
-    var name = String(filename || '')
-        .replace(/\\/g, '/')
-        .split('/')
-        .pop();
+                function getEpisodeInfo(filename) {
+                    var name = String(filename || '')
+                        .replace(/\\/g, '/')
+                        .split('/')
+                        .pop();
 
-    var patterns = [
-        /S(\d{1,2})E(\d{1,3})/i,
-        /(\d{1,2})x(\d{1,3})/i,
-        /Season[\s._-]*(\d{1,2})[\s._-]*Episode[\s._-]*(\d{1,3})/i
-    ];
+                    var patterns = [
+                        /S(\d{1,2})E(\d{1,3})/i,
+                        /(\d{1,2})x(\d{1,3})/i,
+                        /Season[\s._-]*(\d{1,2})[\s._-]*Episode[\s._-]*(\d{1,3})/i
+                    ];
 
-    for (var i = 0; i < patterns.length; i++) {
-        var match = patterns[i].exec(name);
+                    for (var i = 0; i < patterns.length; i++) {
+                        var match = patterns[i].exec(name);
 
-        if (match) {
-            return {
-                season: Number(match[1]),
-                episode: Number(match[2]),
-                found: true
-            };
-        }
-    }
+                        if (match) {
+                            return {
+                                season: Number(match[1]),
+                                episode: Number(match[2]),
+                                found: true
+                            };
+                        }
+                    }
 
-    return {
-        season: 0,
-        episode: 0,
-        found: false
-    };
-}
+                    return {
+                        season: 0,
+                        episode: 0,
+                        found: false
+                    };
+                }
 
-// Отбираем полностью загруженные видео.
-var videoFiles = files.filter(function (file) {
-    var name = String(file.name || '').toLowerCase();
+                // Отбираем полностью загруженные видео.
+                var videoFiles = files.filter(function (file) {
+                    var name = String(file.name || '').toLowerCase();
 
-    if (!isVideoFile(name)) return false;
+                    if (!isVideoFile(name)) return false;
 
-    if (Number(file.progress) < 0.999999) return false;
+                    if (Number(file.progress) < 0.999999) return false;
 
-    if (/sample|trailer|preview|прочее/i.test(name)) {
-        return false;
-    }
+                    if (/sample|trailer|preview|прочее/i.test(name)) {
+                        return false;
+                    }
 
-    return true;
-});
+                    return true;
+                });
 
-if (!videoFiles.length) {
-    notify('Нет полностью скачанных видеофайлов');
-    return;
-}
+                if (!videoFiles.length) {
+                    notify('Нет полностью скачанных видеофайлов');
+                    return;
+                }
 
-// Сортировка по сезону и номеру серии.
-videoFiles.sort(function (a, b) {
-    var infoA = getEpisodeInfo(a.name);
-    var infoB = getEpisodeInfo(b.name);
+                // Сортировка по сезону и номеру серии.
+                videoFiles.sort(function (a, b) {
+                    var infoA = getEpisodeInfo(a.name);
+                    var infoB = getEpisodeInfo(b.name);
 
-    // Если у обоих файлов определены номера серий.
-    if (infoA.found && infoB.found) {
-        if (infoA.season !== infoB.season) {
-            return infoA.season - infoB.season;
-        }
+                    // Если у обоих файлов определены номера серий.
+                    if (infoA.found && infoB.found) {
+                        if (infoA.season !== infoB.season) {
+                            return infoA.season - infoB.season;
+                        }
 
-        if (infoA.episode !== infoB.episode) {
-            return infoA.episode - infoB.episode;
-        }
-    }
+                        if (infoA.episode !== infoB.episode) {
+                            return infoA.episode - infoB.episode;
+                        }
+                    }
 
-    // Если номера серий отсутствуют или одинаковы,
-    // используем естественную сортировку названий.
-    return String(a.name).localeCompare(
-        String(b.name),
-        undefined,
-        {
-            numeric: true,
-            sensitivity: 'base'
-        }
-    );
-});
+                    // Если номера серий отсутствуют или одинаковы,
+                    // используем естественную сортировку названий.
+                    return String(a.name).localeCompare(
+                        String(b.name),
+                        undefined,
+                        {
+                            numeric: true,
+                            sensitivity: 'base'
+                        }
+                    );
+                });
 
-// Выбираем первую серию.
-var selectedFile = videoFiles[0];
+                // Выбираем первую серию.
+                var selectedFile = videoFiles[0];
 
-log('Всего видео:', videoFiles.length);
-log('Первая серия:', selectedFile.name);
-log('Номер серии:', getEpisodeInfo(selectedFile.name).episode);
+                log('Всего видео:', videoFiles.length);
+                log('Первая серия:', selectedFile.name);
+                log('Номер серии:', getEpisodeInfo(selectedFile.name).episode);
 
                 var fileTitle = String(selectedFile.name)
                     .replace(/\\/g, '/')
@@ -1568,7 +1596,7 @@ log('Номер серии:', getEpisodeInfo(selectedFile.name).episode);
         }
 
         if (progress >= 1) {
-            // Полностью скачан — надпись "Готово".
+            // Полностью скачан — надпись "Готов".
             button.classList.remove('qbit-loading');
             button.classList.add('qbit-done');
             button.dataset.qbitPolling = '0';
@@ -1826,6 +1854,22 @@ log('Номер серии:', getEpisodeInfo(selectedFile.name).episode);
                     false,
                     'Удалять файлы торрента',
                     ''
+                ],
+
+                [
+                    'qbit_external_player',
+                    'trigger',
+                    true,
+                    'Запускать во внешнем плеере',
+                    'По умолчанию используется DDD Player. Выключите для встроенного плеера Lampa.'
+                ],
+
+                [
+                    'qbit_player_package',
+                    'input',
+                    'top.rootu.dddplayer',
+                    'Пакет внешнего плеера',
+                    'Для DDD Player: top.rootu.dddplayer'
                 ],
 
                 [
