@@ -622,15 +622,13 @@
     // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ (МОДАЛКА СЕРИЙ)
     // ========================================================================
 
-    function renderTorrentFiles(hash, torrent, files) {
+        function renderTorrentFiles(hash, torrent, files) {
         if (!window.Lampa || !Lampa.Modal) { notify('Окно файлов недоступно'); return; }
         var videoFiles = files.filter(function (file) { return isVideoFile(file.name); });
         videoFiles.sort(compareVideoFiles);
         if (!videoFiles.length) { notify('В торренте нет видеофайлов'); return; }
 
         var completed = videoFiles.filter(function (file) { return Number(file.progress) >= 0.999999; }).length;
-        var html = document.createElement('div');
-        html.className = 'qbit-files';
         var torrentName = torrent.name || 'Торрент';
 
         var header = '<div class="qbit-files__header">' +
@@ -672,105 +670,70 @@
             '<div class="qbit-files__warning">«Исключить» отключает загрузку файла. Уже скачанный файл физически не удаляется.</div>' +
             '<button class="qbit-files__refresh">Обновить список</button></div>';
 
-        html.innerHTML = header + list + footer;
+        // Формируем итоговую HTML-строку
+        var htmlContent = '<div class="qbit-files">' + header + list + footer + '</div>';
 
+        // Открываем модалку, передавая строку, а не DOM-элемент
         Lampa.Modal.open({
             title: 'Файлы торрента',
-            html: html,
+            html: htmlContent,
             size: 'large',
             onBack: function () {
                 Lampa.Modal.close();
             }
         });
 
-        // ------------------------------------------------
-        // Обработчики кнопок файлов
-        // ------------------------------------------------
+        // Привязываем обработчики к кнопкам после открытия окна
+        setTimeout(function () {
+            var $html = window.jQuery('.modal .qbit-files');
+            if (!$html.length) return;
 
-        if (!window.jQuery) {
-            log('jQuery не найден: обработчики окна файлов недоступны');
-            return;
-        }
-
-                var $html = window.jQuery(html);
-
-        // Проверка: если jQuery-объект пуст или модалка уже закрыта — выходим
-        if (!$html || !$html.length) {
-            log('Элементы окна файлов не найдены, отмена привязки событий');
-            return;
-        }
-
-        // Безопасная привязка обработчиков
-        var $downloadBtn = $html.find('[data-action="download"]');
-        if ($downloadBtn.length) {
-            $downloadBtn.on('hover:enter click', function (event) {
+            $html.find('[data-action="download"]').on('hover:enter click', function (event) {
                 event.preventDefault();
                 event.stopPropagation();
                 var id = this.getAttribute('data-id');
                 var selected = null;
                 for (var i = 0; i < files.length; i++) {
-                    if (String(files[i].id) === String(id)) {
-                        selected = files[i];
-                        break;
-                    }
+                    if (String(files[i].id) === String(id)) { selected = files[i]; break; }
                 }
                 if (!selected) { notify('Файл не найден'); return; }
                 downloadSingleFile(hash, selected, files, function (success) {
-                    if (success) {
-                        setTimeout(function () { refreshFileModal(hash); }, 500);
-                    }
+                    if (success) setTimeout(function () { refreshFileModal(hash); }, 500);
                 });
             });
-        }
 
-        var $playBtn = $html.find('[data-action="play"]');
-        if ($playBtn.length) {
-            $playBtn.on('hover:enter click', function (event) {
+            $html.find('[data-action="play"]').on('hover:enter click', function (event) {
                 event.preventDefault();
                 event.stopPropagation();
                 var id = this.getAttribute('data-id');
                 var selected = null;
                 for (var i = 0; i < files.length; i++) {
-                    if (String(files[i].id) === String(id)) {
-                        selected = files[i];
-                        break;
-                    }
+                    if (String(files[i].id) === String(id)) { selected = files[i]; break; }
                 }
                 if (!selected) { notify('Файл не найден'); return; }
                 playTorrentFile(selected, torrent);
             });
-        }
 
-        var $excludeBtn = $html.find('[data-action="exclude"]');
-        if ($excludeBtn.length) {
-            $excludeBtn.on('hover:enter click', function (event) {
+            $html.find('[data-action="exclude"]').on('hover:enter click', function (event) {
                 event.preventDefault();
                 event.stopPropagation();
                 var id = this.getAttribute('data-id');
                 var selected = null;
                 for (var i = 0; i < files.length; i++) {
-                    if (String(files[i].id) === String(id)) {
-                        selected = files[i];
-                        break;
-                    }
+                    if (String(files[i].id) === String(id)) { selected = files[i]; break; }
                 }
                 if (!selected) { notify('Файл не найден'); return; }
                 excludeSingleFile(hash, selected, function (success) {
-                    if (success) {
-                        setTimeout(function () { refreshFileModal(hash); }, 500);
-                    }
+                    if (success) setTimeout(function () { refreshFileModal(hash); }, 500);
                 });
             });
-        }
 
-        var $refreshBtn = $html.find('.qbit-files__refresh');
-        if ($refreshBtn.length) {
-            $refreshBtn.on('hover:enter click', function (event) {
+            $html.find('.qbit-files__refresh').on('hover:enter click', function (event) {
                 event.preventDefault();
                 event.stopPropagation();
                 refreshFileModal(hash);
             });
-        }
+        }, 100);
     }
     // ========================================================================
     // ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
