@@ -2022,47 +2022,113 @@
     // ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОРРЕНТЕ
     // ========================================================================
 
-    function getTorrentInfo(hash, callback) {
-        if (!hash) {
-            callback(null);
-            return;
+function getTorrentInfo(hash, callback) {
+    if (!hash) {
+        callback(null);
+        return;
+    }
+
+    var targetHash = String(hash).trim().toLowerCase();
+    var completed = false;
+
+    function finish(torrent) {
+        if (completed) return;
+        completed = true;
+        callback(torrent || null);
+    }
+
+    function parseTorrents(response) {
+        if (
+            response === null ||
+            response === undefined ||
+            response === ''
+        ) {
+            return null;
         }
 
-        qbGet(
-            '/api/v2/torrents/info?hashes=' +
-            encodeURIComponent(hash),
-            function (response) {
-                if (
-                    response === null ||
-                    response === undefined ||
-                    response === ''
-                ) {
-                    callback(null);
-                    return;
-                }
+        try {
+            var data = typeof response === 'string' ?
+                JSON.parse(response) : response;
 
-                try {
-                    var data = JSON.parse(response);
-
-                    var torrents = Array.isArray(data) ?
-                        data : (data.torrents || []);
-
-                    callback(
-                        torrents.length ?
-                            torrents[0] : null
-                    );
-                } catch (error) {
-                    console.error(
-                        '[qBittorrent] torrent info:',
-                        error,
-                        response
-                    );
-
-                    callback(null);
-                }
+            if (Array.isArray(data)) {
+                return data;
             }
-        );
+
+            if (data && Array.isArray(data.torrents)) {
+                return data.torrents;
+            }
+        } catch (error) {
+            log('Ошибка разбора информации о торрентах:', error);
+        }
+
+        return null;
     }
+
+    function findByHash(torrents) {
+        if (!Array.isArray(torrents)) return null;
+
+        for (var i = 0; i < torrents.length; i++) {
+            var torrent = torrents[i];
+
+            if (
+                torrent &&
+                String(torrent.hash || '').trim().toLowerCase() === targetHash
+            ) {
+                return torrent;
+            }
+        }
+
+        return null;
+    }
+
+    // Сначала ищем торрент по конкретному хешу.
+    qbGet(
+        '/api/v2/torrents/info?hashes=' +
+        encodeURIComponent(targetHash),
+        function (response) {
+            var torrents = parseTorrents(response);
+            var torrent = findByHash(torrents);
+
+            if (torrent) {
+                finish(torrent);
+                return;
+            }
+
+            log(
+                'Торрент не найден по точному запросу. ' +
+                'Проверяю общий список. Хеш:',
+                targetHash
+            );
+
+            // Резервный запрос: получаем весь список торрентов.
+            qbGet(
+                '/api/v2/torrents/info',
+                function (fallbackResponse) {
+                    var allTorrents = parseTorrents(fallbackResponse);
+                    var found = findByHash(allTorrents);
+
+                    if (found) {
+                        log(
+                            'Торрент найден резервным поиском:',
+                            found.name,
+                            found.hash
+                        );
+
+                        finish(found);
+                        return;
+                    }
+
+                    log(
+                        'Торрент не найден даже в общем списке. Хеш:',
+                        targetHash
+                    );
+
+                    finish(null);
+                }
+            );
+        }
+    );
+}
 
     function getTorrentFiles(hash, callback) {
         qbGet(
