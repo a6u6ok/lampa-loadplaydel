@@ -1,7 +1,7 @@
 // ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
-// Исправленная версия
+// Исправленная версия (навигация пультом + только кнопка «Проиграть»)
 // ============================================================================
 
 (function () {
@@ -742,8 +742,7 @@
             headers: authHeaders()
         }, callback);
     }
-
-    // ========================================================================
+      // ========================================================================
     // ДОБАВЛЕНИЕ ТОРРЕНТА
     // ========================================================================
 
@@ -923,7 +922,8 @@
             }
         );
     }
-       // ========================================================================
+
+    // ========================================================================
     // SMB И ЗАПУСК ПЛЕЕРА
     // ========================================================================
 
@@ -1130,6 +1130,7 @@
 
     // ========================================================================
     // ПРИОРИТЕТ ОТДЕЛЬНОГО ФАЙЛА
+    // (API оставлен, но в UI больше не используется)
     // ========================================================================
 
     function setFilePriority(hash, fileId, priority, callback) {
@@ -1152,161 +1153,6 @@
                 );
 
                 if (callback) callback(success, response);
-            }
-        );
-    }
-
-    function downloadSingleFile(hash, selectedFile, allFiles, callback) {
-        if (!selectedFile || selectedFile.id === undefined) {
-            notify('Не удалось определить файл');
-            if (callback) callback(false);
-            return;
-        }
-
-        if (Number(selectedFile.progress) >= 0.999999) {
-            notify(
-                'Файл уже скачан: ' +
-                fileBasename(selectedFile.name)
-            );
-
-            if (callback) callback(true);
-            return;
-        }
-
-        var alreadySelected = (
-            Number(selectedFile.priority) > 0
-        ) && allFiles.every(function (file) {
-            if (String(file.id) === String(selectedFile.id)) {
-                return true;
-            }
-
-            return Number(file.priority) === 0;
-        });
-
-        if (alreadySelected) {
-            notify(
-                'Файл уже выбран для загрузки: ' +
-                fileBasename(selectedFile.name)
-            );
-
-            if (callback) callback(true);
-            return;
-        }
-
-        notify('Назначаю загрузку выбранной серии...');
-
-        var index = 0;
-        var changed = false;
-        var failed = false;
-
-        function setSelectedPriority() {
-            setFilePriority(
-                hash,
-                selectedFile.id,
-                1,
-                function (success) {
-                    if (success) {
-                        notify(
-                            'Выбрана загрузка: ' +
-                            fileBasename(selectedFile.name)
-                        );
-                    } else {
-                        notify('Не удалось назначить загрузку файла');
-                    }
-
-                    if (callback) callback(success);
-                }
-            );
-        }
-
-        function setNext() {
-            if (failed) return;
-
-            if (index >= allFiles.length) {
-                setSelectedPriority();
-                return;
-            }
-
-            var file = allFiles[index++];
-
-            if (String(file.id) === String(selectedFile.id)) {
-                setNext();
-                return;
-            }
-
-            if (Number(file.priority) === 0) {
-                setNext();
-                return;
-            }
-
-            setFilePriority(
-                hash,
-                file.id,
-                0,
-                function (success) {
-                    if (!success) {
-                        failed = true;
-
-                        notify(
-                            'Не удалось исключить файл: ' +
-                            fileBasename(file.name)
-                        );
-
-                        if (callback) callback(false);
-                        return;
-                    }
-
-                    changed = true;
-                    setNext();
-                }
-            );
-        }
-
-        setNext();
-    }
-
-    function excludeSingleFile(hash, file, callback) {
-        if (!file || file.id === undefined) {
-            notify('Не удалось определить файл');
-            if (callback) callback(false);
-            return;
-        }
-
-        if (Number(file.progress) >= 0.999999) {
-            notify(
-                'Файл уже скачан, исключение не требуется: ' +
-                fileBasename(file.name)
-            );
-
-            if (callback) callback(true);
-            return;
-        }
-
-        if (Number(file.priority) === 0) {
-            notify(
-                'Файл уже исключён: ' +
-                fileBasename(file.name)
-            );
-
-            if (callback) callback(true);
-            return;
-        }
-
-        setFilePriority(
-            hash,
-            file.id,
-            0,
-            function (success) {
-                if (success) {
-                    notify(
-                        'Файл исключён из загрузки: ' +
-                        fileBasename(file.name)
-                    );
-                } else {
-                    notify('Не удалось изменить приоритет файла');
-                }
-
-                if (callback) callback(success);
             }
         );
     }
@@ -1372,7 +1218,158 @@
     }
 
     // ========================================================================
+    // НАВИГАЦИЯ ПУЛЬТОМ В ОКНЕ ФАЙЛОВ
+    // ========================================================================
+
+    // Храним активное состояние окна файлов:
+    // элементы кнопок, индексы и ссылку на контейнер со списком.
+    var fileModalNav = {
+        buttons: [],
+        index: 0,
+        listEl: null,
+        onKeyDown: null,
+        onKeyUp: null
+    };
+
+    function cleanupFileModalNav() {
+        if (fileModalNav.onKeyDown) {
+            document.removeEventListener(
+                'keydown',
+                fileModalNav.onKeyDown,
+                true
+            );
+            fileModalNav.onKeyDown = null;
+        }
+
+        if (fileModalNav.onKeyUp) {
+            document.removeEventListener(
+                'keyup',
+                fileModalNav.onKeyUp,
+                true
+            );
+            fileModalNav.onKeyUp = null;
+        }
+
+        fileModalNav.buttons = [];
+        fileModalNav.index = 0;
+        fileModalNav.listEl = null;
+    }
+
+    function focusFileButton(index) {
+        var buttons = fileModalNav.buttons;
+
+        if (!buttons.length) return;
+
+        // Заворачивание по кругу
+        if (index < 0) index = buttons.length - 1;
+        if (index >= buttons.length) index = 0;
+
+        fileModalNav.index = index;
+
+        buttons.forEach(function (button, i) {
+            if (!button) return;
+
+            if (i === index) {
+                button.classList.add('focus');
+            } else {
+                button.classList.remove('focus');
+            }
+        });
+
+        // Прокрутка списка к активной кнопке
+        var active = buttons[index];
+
+        if (active && fileModalNav.listEl) {
+            try {
+                var listRect =
+                    fileModalNav.listEl.getBoundingClientRect();
+                var btnRect = active.getBoundingClientRect();
+
+                // Верхняя граница списка + отступ
+                var topMargin = 40;
+
+                if (btnRect.top < listRect.top + topMargin) {
+                    fileModalNav.listEl.scrollTop -=
+                        (listRect.top + topMargin) - btnRect.top;
+                } else if (btnRect.bottom > listRect.bottom - 10) {
+                    fileModalNav.listEl.scrollTop +=
+                        btnRect.bottom -
+                        (listRect.bottom - 10);
+                }
+            } catch (error) {}
+        }
+    }
+
+    function installFileModalNav(buttons, listEl) {
+        cleanupFileModalNav();
+
+        fileModalNav.buttons = buttons;
+        fileModalNav.index = 0;
+        fileModalNav.listEl = listEl;
+
+        if (!buttons.length) return;
+
+        focusFileButton(0);
+
+        function isModalOpen() {
+            try {
+                return !!document.querySelector('.qbit-files');
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function activateCurrent() {
+            var active = fileModalNav.buttons[fileModalNav.index];
+
+            if (!active) return;
+
+            try {
+                active.click();
+            } catch (error) {}
+        }
+
+        fileModalNav.onKeyDown = function (event) {
+            if (!isModalOpen()) return;
+
+            var key = event.keyCode || event.which;
+
+            // 38 — вверх, 40 — вниз
+            // 13 — Enter, 37/39 — влево/вправо (игнор)
+            if (key === 38) {
+                event.preventDefault();
+                event.stopPropagation();
+                focusFileButton(fileModalNav.index - 1);
+                return;
+            }
+
+            if (key === 40) {
+                event.preventDefault();
+                event.stopPropagation();
+                focusFileButton(fileModalNav.index + 1);
+                return;
+            }
+
+            if (key === 13) {
+                event.preventDefault();
+                event.stopPropagation();
+                activateCurrent();
+                return;
+            }
+        };
+
+        fileModalNav.onKeyUp = null;
+
+        document.addEventListener(
+            'keydown',
+            fileModalNav.onKeyDown,
+            true
+        );
+    }
+
+    // ========================================================================
     // ОКНО УПРАВЛЕНИЯ ФАЙЛАМИ
+    // (только кнопка «Проиграть» + навигация пультом)
     // ========================================================================
 
     function renderTorrentFiles(hash, torrent, files, isRefresh) {
@@ -1416,7 +1413,7 @@
                     ' · Загружено: ' + completed +
                 '</div>' +
                 '<div class="qbit-files__hint">' +
-                    'Выберите действие для нужной серии' +
+                    'Стрелки вверх/вниз — выбор серии, OK — воспроизвести' +
                 '</div>' +
             '</div>';
 
@@ -1475,27 +1472,12 @@
                     '</div>' +
 
                     '<div class="qbit-file__actions">' +
-
-                        '<button class="qbit-file__button qbit-file__download"' +
-                            ' data-action="download"' +
-                            ' data-id="' + escapeHtml(file.id) + '">' +
-                            (ready ? 'Выбрать' : 'Скачать') +
-                        '</button>' +
-
                         '<button class="qbit-file__button qbit-file__play"' +
                             ' data-action="play"' +
                             ' data-id="' + escapeHtml(file.id) + '"' +
                             (ready ? '' : ' disabled') + '>' +
-                            'Играть' +
+                            'Проиграть' +
                         '</button>' +
-
-                        '<button class="qbit-file__button qbit-file__exclude"' +
-                            ' data-action="exclude"' +
-                            ' data-id="' + escapeHtml(file.id) + '"' +
-                            (excluded ? ' disabled' : '') + '>' +
-                            'Исключить' +
-                        '</button>' +
-
                     '</div>' +
                 '</div>';
         });
@@ -1504,10 +1486,6 @@
 
         var footer =
             '<div class="qbit-files__footer">' +
-                '<div class="qbit-files__warning">' +
-                    '«Исключить» отключает загрузку файла. ' +
-                    'Уже скачанный файл физически не удаляется.' +
-                '</div>' +
                 '<button class="qbit-files__refresh">' +
                     'Обновить список' +
                 '</button>' +
@@ -1533,6 +1511,8 @@
                 activeFileModalHash = '';
                 fileModalRequestId++;
 
+                cleanupFileModalNav();
+
                 Lampa.Modal.close();
                 Lampa.Controller.toggle('content');
             }
@@ -1541,54 +1521,16 @@
         var $html = window.jQuery(html);
 
         // ------------------------------------------------
-        // Скачать отдельную серию
-        // ------------------------------------------------
-
-        $html.find('[data-action="download"]').on(
-            'hover:enter click',
-            function (event) {
-                event.preventDefault();
-                event.stopPropagation();
-
-                var id = this.getAttribute('data-id');
-                var selected = null;
-
-                for (var i = 0; i < files.length; i++) {
-                    if (String(files[i].id) === String(id)) {
-                        selected = files[i];
-                        break;
-                    }
-                }
-
-                if (!selected) {
-                    notify('Файл не найден');
-                    return;
-                }
-
-                downloadSingleFile(
-                    hash,
-                    selected,
-                    files,
-                    function (success) {
-                        if (success) {
-                            setTimeout(function () {
-                                refreshFileModal(hash);
-                            }, 500);
-                        }
-                    }
-                );
-            }
-        );
-
-        // ------------------------------------------------
         // Воспроизвести серию
         // ------------------------------------------------
 
         $html.find('[data-action="play"]').on(
             'hover:enter click',
             function (event) {
-                event.preventDefault();
-                event.stopPropagation();
+                if (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
 
                 var id = this.getAttribute('data-id');
                 var selected = null;
@@ -1610,57 +1552,40 @@
         );
 
         // ------------------------------------------------
-        // Исключить серию из загрузки
-        // ------------------------------------------------
-
-        $html.find('[data-action="exclude"]').on(
-            'hover:enter click',
-            function (event) {
-                event.preventDefault();
-                event.stopPropagation();
-
-                var id = this.getAttribute('data-id');
-                var selected = null;
-
-                for (var i = 0; i < files.length; i++) {
-                    if (String(files[i].id) === String(id)) {
-                        selected = files[i];
-                        break;
-                    }
-                }
-
-                if (!selected) {
-                    notify('Файл не найден');
-                    return;
-                }
-
-                excludeSingleFile(
-                    hash,
-                    selected,
-                    function (success) {
-                        if (success) {
-                            setTimeout(function () {
-                                refreshFileModal(hash);
-                            }, 500);
-                        }
-                    }
-                );
-            }
-        );
-
-        // ------------------------------------------------
         // Обновить список серий
         // ------------------------------------------------
 
         $html.find('.qbit-files__refresh').on(
             'hover:enter click',
             function (event) {
-                event.preventDefault();
-                event.stopPropagation();
+                if (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
 
                 refreshFileModal(hash);
             }
         );
+
+        // ------------------------------------------------
+        // Навигация пультом
+        // ------------------------------------------------
+
+        var navButtons = [];
+
+        // Кнопки «Проиграть» в порядке следования серий
+        $html.find('[data-action="play"]').each(function () {
+            navButtons.push(this);
+        });
+
+        // Кнопка «Обновить список» в конце
+        $html.find('.qbit-files__refresh').each(function () {
+            navButtons.push(this);
+        });
+
+        var listEl = html.querySelector('.qbit-files__list');
+
+        installFileModalNav(navButtons, listEl);
     }
 
     // ========================================================================
@@ -1909,7 +1834,7 @@
             );
         });
     }
-        // ========================================================================
+    // ========================================================================
     // ОБРАБОТКА НАЖАТИЙ
     // ========================================================================
 
@@ -2689,6 +2614,12 @@
                 'opacity:0.6;' +
             '}' +
 
+            '.qbit-files__list {' +
+                'overflow-y:auto;' +
+                'max-height:52vh;' +
+                'padding-right:4px;' +
+            '}' +
+
             '.qbit-file {' +
                 'display:flex;' +
                 'flex-direction:column;' +
@@ -2745,16 +2676,14 @@
                 'cursor:pointer;' +
             '}' +
 
-            '.qbit-file__download {' +
-                'background:#218c54;' +
+            '.qbit-file__button.focus, ' +
+            '.qbit-files__refresh.focus {' +
+                'outline:2px solid #27ae60;' +
+                'outline-offset:2px;' +
             '}' +
 
             '.qbit-file__play {' +
                 'background:#2878b9;' +
-            '}' +
-
-            '.qbit-file__exclude {' +
-                'background:#a94442;' +
             '}' +
 
             '.qbit-file__button:disabled {' +
@@ -2764,13 +2693,6 @@
             '.qbit-files__footer {' +
                 'padding-top:12px;' +
                 'border-top:1px solid rgba(128,128,128,0.25);' +
-            '}' +
-
-            '.qbit-files__warning {' +
-                'font-size:11px;' +
-                'opacity:0.65;' +
-                'margin-bottom:10px;' +
-                'line-height:1.4;' +
             '}' +
 
             '.qbit-files__refresh {' +
@@ -2865,6 +2787,7 @@
             log('contentLayout: NoSubfolder');
             log('Управление отдельными файлами включено');
             log('Кнопка папки для списка серий включена');
+            log('Навигация пультом в окне файлов включена');
             log('Плагин загружен');
         } catch (error) {
             console.error(
@@ -2905,4 +2828,4 @@
         }, 5000);
     }
 
-})();
+})();    
