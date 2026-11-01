@@ -1192,7 +1192,7 @@
         style.id = 'qbit-direct-style';
         style.textContent =
             '.torrent-item, .torrent-item__right { position:relative; margin-right:32px !important; }' +
-            '.qbit-direct-actions { display:flex; flex-direction:column; justify-content:center; align-items:center; position:absolute; right:-28px; top:0; bottom:0; z-index:999; gap:6px; }' +
+            '.qbit-direct-actions { display:flex; flex-direction:column; justify-content:center; align-items:center; position:absolute; right:10px; top:0; bottom:0; z-index:999; gap:6px; }' +
             '.qbit-direct-btn { display:flex; flex-direction:column; align-items:center; justify-content:center; width:24px; height:24px; background:none !important; border:none !important; border-radius:0 !important; padding:0; cursor:pointer; box-sizing:border-box; transition:transform 0.2s; }' +
             '.qbit-direct-btn.focus { transform:scale(1.15); outline:none; }' +
             '.qbit-direct-btn svg { width:20px; height:20px; fill:#27ae60; }' +
