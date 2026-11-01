@@ -1704,7 +1704,7 @@ function makeSmbUri(fileName) {
     // ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК ПЕРВОГО ГОТОВОГО ВИДЕО
     // ========================================================================
 
-    function handlePlayerButton(hash) {
+        function handlePlayerButton(hash) {
         if (!hash) {
             notify('Не удалось определить хеш торрента');
             return;
@@ -1792,7 +1792,9 @@ function makeSmbUri(fileName) {
                     log('Всего файлов:', files.length);
 
                     var videoFiles = files.filter(function (file) {
-                        var name = String(file.name || '');
+                        // Для NoSubfolder проверяем базовое имя файла, 
+                        // так как qBittorrent убирает папки при скачивании
+                        var name = fileBasename(file.name);
 
                         if (!isVideoFile(name)) return false;
 
@@ -1834,6 +1836,7 @@ function makeSmbUri(fileName) {
             );
         });
     }
+
     // ========================================================================
     // ОБРАБОТКА НАЖАТИЙ
     // ========================================================================
