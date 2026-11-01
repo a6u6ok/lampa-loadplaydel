@@ -927,23 +927,23 @@
     // SMB И ЗАПУСК ПЛЕЕРА
     // ========================================================================
 
-    function makeSmbUri(fileName) {
-        var smbRoot = String(cfg().smb_file || '')
-            .trim()
-            .replace(/\\/g, '/')
-            .replace(/\/+$/, '');
+function makeSmbUri(fileName) {
+    var smbRoot = String(cfg().smb_file || '')
+        .trim()
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '');
 
-        // Важно: не отбрасываем каталоги внутри торрента.
-        // Например, Season 1/Episode 01.mkv останется целым путём.
-        var file = cleanFsPath(fileName).replace(/^\/+/, '');
+    // Берем только имя файла, игнорируя пути подпапок
+    var file = fileBasename(fileName);
 
-        var result = smbRoot +
-            (file ? '/' + encodeSmbPath(file) : '');
+    var result = smbRoot +
+        (file ? '/' + encodeSmbPath(file) : '');
 
-        log('SMB URI:', result);
+    log('SMB URI (NoSubfolder mode):', result);
 
-        return result;
-    }
+    return result;
+}
+
 
     function openFileInPlayer(fileUri, title) {
         var uri = String(fileUri || '').trim();
