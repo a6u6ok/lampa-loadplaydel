@@ -692,72 +692,85 @@
             return;
         }
 
-        var $html = window.jQuery(html);
+                var $html = window.jQuery(html);
 
-        $html.find('[data-action="download"]').on('hover:enter click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            var id = this.getAttribute('data-id');
-            var selected = null;
-            for (var i = 0; i < files.length; i++) {
-                if (String(files[i].id) === String(id)) {
-                    selected = files[i];
-                    break;
+        // Проверка: если jQuery-объект пуст или модалка уже закрыта — выходим
+        if (!$html || !$html.length) {
+            log('Элементы окна файлов не найдены, отмена привязки событий');
+            return;
+        }
+
+        // Безопасная привязка обработчиков
+        var $downloadBtn = $html.find('[data-action="download"]');
+        if ($downloadBtn.length) {
+            $downloadBtn.on('hover:enter click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                var id = this.getAttribute('data-id');
+                var selected = null;
+                for (var i = 0; i < files.length; i++) {
+                    if (String(files[i].id) === String(id)) {
+                        selected = files[i];
+                        break;
+                    }
                 }
-            }
-            if (!selected) { notify('Файл не найден'); return; }
-            downloadSingleFile(hash, selected, files, function (success) {
-                if (success) {
-                    setTimeout(function () {
-                        refreshFileModal(hash);
-                    }, 500);
-                }
+                if (!selected) { notify('Файл не найден'); return; }
+                downloadSingleFile(hash, selected, files, function (success) {
+                    if (success) {
+                        setTimeout(function () { refreshFileModal(hash); }, 500);
+                    }
+                });
             });
-        });
+        }
 
-        $html.find('[data-action="play"]').on('hover:enter click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            var id = this.getAttribute('data-id');
-            var selected = null;
-            for (var i = 0; i < files.length; i++) {
-                if (String(files[i].id) === String(id)) {
-                    selected = files[i];
-                    break;
+        var $playBtn = $html.find('[data-action="play"]');
+        if ($playBtn.length) {
+            $playBtn.on('hover:enter click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                var id = this.getAttribute('data-id');
+                var selected = null;
+                for (var i = 0; i < files.length; i++) {
+                    if (String(files[i].id) === String(id)) {
+                        selected = files[i];
+                        break;
+                    }
                 }
-            }
-            if (!selected) { notify('Файл не найден'); return; }
-            playTorrentFile(selected, torrent);
-        });
-
-        $html.find('[data-action="exclude"]').on('hover:enter click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            var id = this.getAttribute('data-id');
-            var selected = null;
-            for (var i = 0; i < files.length; i++) {
-                if (String(files[i].id) === String(id)) {
-                    selected = files[i];
-                    break;
-                }
-            }
-            if (!selected) { notify('Файл не найден'); return; }
-            excludeSingleFile(hash, selected, function (success) {
-                if (success) {
-                    setTimeout(function () {
-                        refreshFileModal(hash);
-                    }, 500);
-                }
+                if (!selected) { notify('Файл не найден'); return; }
+                playTorrentFile(selected, torrent);
             });
-        });
+        }
 
-        $html.find('.qbit-files__refresh').on('hover:enter click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            refreshFileModal(hash);
-        });
-    }
+        var $excludeBtn = $html.find('[data-action="exclude"]');
+        if ($excludeBtn.length) {
+            $excludeBtn.on('hover:enter click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                var id = this.getAttribute('data-id');
+                var selected = null;
+                for (var i = 0; i < files.length; i++) {
+                    if (String(files[i].id) === String(id)) {
+                        selected = files[i];
+                        break;
+                    }
+                }
+                if (!selected) { notify('Файл не найден'); return; }
+                excludeSingleFile(hash, selected, function (success) {
+                    if (success) {
+                        setTimeout(function () { refreshFileModal(hash); }, 500);
+                    }
+                });
+            });
+        }
 
+        var $refreshBtn = $html.find('.qbit-files__refresh');
+        if ($refreshBtn.length) {
+            $refreshBtn.on('hover:enter click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                refreshFileModal(hash);
+            });
+        }
     // ========================================================================
     // ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
     // ========================================================================
