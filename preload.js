@@ -424,12 +424,13 @@
                 '</button>' +
             '</div>';
 
-        Lampa.Modal.open({
+              Lampa.Modal.open({
             title: 'qBittorrent — настройка',
-            html: html,
+            html: window.jQuery(html),
             size: 'medium',
             onBack: function () {
                 Lampa.Modal.close();
+                Lampa.Controller.toggle('content');
             }
         });
 
@@ -1490,12 +1491,15 @@
 
         html.innerHTML = header + list + footer;
 
-        Lampa.Modal.open({
+                Lampa.Modal.open({
             title: 'Файлы торрента',
-            html: html,
+            html: window.jQuery(html),
             size: 'large',
+            align: 'top',
+            mask: true,
             onBack: function () {
                 Lampa.Modal.close();
+                Lampa.Controller.toggle('content');
             }
         });
 
