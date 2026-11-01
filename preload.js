@@ -1,18 +1,19 @@
 // ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
-// Исправленная версия
+// Версия с отключением дополнительных папок торрентов
 //
 // Возможности:
 // - Добавление magnet-ссылок в qBittorrent
+// - Загрузка непосредственно в исходный каталог
+// - Отключение создания корневой папки торрента
 // - Отображение и восстановление прогресса загрузки
 // - Запуск полностью загруженных видео через плеер Lampa
 // - Выбор первой серии сериала
 // - Удаление торрентов
-// - Формирование SMB-путей для вложенных папок
+// - Формирование SMB-путей
 // - Настройки в Lampa.Storage
 //
 // DDD Player: top.rootu.dddplayer
-// Запуск выполняется через штатный AndroidJS.openPlayer(link, json).
 // ============================================================================
 
 (function () {
@@ -180,9 +181,8 @@
                 storeGet('qbit_confirm', true), true
             ),
 
-            auto_cat_path: isTrue(
-                storeGet('qbit_auto_cat_path', true), true
-            ),
+            // Категория больше не добавляется к пути.
+            auto_cat_path: false,
 
             delete_files: isTrue(
                 storeGet('qbit_delete_files', false), false
@@ -830,9 +830,6 @@
                 return;
             }
 
-            // AndroidJS может самостоятельно сохранять Cookie
-            // между запросами. Если SID доступен в ответе,
-            // сохраняем его для следующих обращений.
             var cookieMatch = /SID=([^;\s]+)/i.exec(
                 String(response)
             );
@@ -879,41 +876,45 @@
     function buildAddBody(magnet, title) {
         var config = cfg();
 
-        var body = 'urls=' + encodeURIComponent(magnet);
-        var finalSavePath = config.savepath;
-        var autoTMM = false;
+        // Используем строго исходный каталог загрузки.
+        // Категория не добавляется к пути.
+        var finalSavePath = cleanFsPath(config.savepath);
 
-        if (config.auto_cat_path && config.category) {
-            if (finalSavePath) {
-                finalSavePath = joinPath(
-                    finalSavePath,
-                    config.category
-                );
-            } else {
-                autoTMM = true;
-            }
-        }
+        var params = [];
+
+        params.push(
+            'urls=' + encodeURIComponent(magnet)
+        );
 
         if (finalSavePath) {
-            body += '&savepath=' +
-                encodeURIComponent(finalSavePath);
+            params.push(
+                'savepath=' + encodeURIComponent(finalSavePath)
+            );
         }
 
+        // Категория остаётся только меткой qBittorrent.
         if (config.category) {
-            body += '&category=' +
-                encodeURIComponent(config.category);
+            params.push(
+                'category=' + encodeURIComponent(config.category)
+            );
         }
+
+        // Запрещаем автоматическое управление папками.
+        params.push('autoTMM=false');
+
+        // Не создавать дополнительную корневую папку торрента.
+        params.push('contentLayout=NoSubfolder');
+
+        params.push('paused=false');
+        params.push('sequentialDownload=false');
 
         if (config.rename && title) {
-            body += '&rename=' +
-                encodeURIComponent(title);
+            params.push(
+                'rename=' + encodeURIComponent(title)
+            );
         }
 
-        body += '&paused=false';
-        body += '&autoTMM=' +
-            (autoTMM ? 'true' : 'false');
-
-        return body;
+        return params.join('&');
     }
 
     function verifyTorrentAdded(hash, attempt, callback) {
@@ -1138,8 +1139,6 @@
             var contentLeaf = contentPath.split('/').pop();
             var fileLeaf = file.split('/').pop();
 
-            // Для одиночного файла content_path заканчивается
-            // именем самого файла, поэтому папку добавлять нельзя.
             if (contentLeaf !== fileLeaf) {
                 contentRelative = relativeFsPath(
                     torrentSave,
@@ -1148,7 +1147,6 @@
             }
         }
 
-        // Если qBittorrent вернул абсолютный путь.
         if (/^(?:[A-Za-z]:\/|\/)/.test(file)) {
             var absoluteRelative = relativeFsPath(
                 configuredSave,
@@ -1175,8 +1173,6 @@
             relativeBase = '';
             contentRelative = '';
         } else {
-            // В обычном режиме добавляем папку торрента,
-            // если API ещё не включил её в file.name.
             if (
                 contentRelative &&
                 file.indexOf(contentRelative + '/') !== 0 &&
@@ -1193,8 +1189,6 @@
                 file = relativeBase + '/' + file;
             }
 
-            // Если SMB уже указывает непосредственно
-            // на папку торрента, убираем её из относительного пути.
             if (
                 config.smb_torrent_folder &&
                 contentRelative &&
@@ -1256,9 +1250,6 @@
             playerPkg || config.player_package
         );
 
-        // Штатный AndroidJS.openPlayer принимает ДВА аргумента.
-        // Выбор внешнего плеера выполняется средствами Lampa.
-
         if (config.external_player) {
             if (
                 window.AndroidJS &&
@@ -1298,7 +1289,6 @@
             return;
         }
 
-        // Встроенный плеер Lampa.
         try {
             if (
                 window.Lampa &&
@@ -1367,7 +1357,6 @@
         var infoA = getEpisodeInfo(a.name);
         var infoB = getEpisodeInfo(b.name);
 
-        // Файлы с определёнными номерами серий идут первыми.
         if (infoA.found && !infoB.found) return -1;
         if (!infoA.found && infoB.found) return 1;
 
@@ -1481,7 +1470,6 @@
                     return;
                 }
 
-                // Выбираем только полностью скачанные видео.
                 var videoFiles = files.filter(function (file) {
                     var name = String(file.name || '');
 
@@ -1505,7 +1493,6 @@
                     return;
                 }
 
-                // Сортировка по сезону и серии.
                 videoFiles.sort(compareVideoFiles);
 
                 var selectedFile = videoFiles[0];
@@ -1841,9 +1828,9 @@
                 [
                     'qbit_auto_cat_path',
                     'trigger',
-                    true,
+                    false,
                     'Добавлять категорию к пути',
-                    ''
+                    'Отключено: категория не создаёт отдельную папку'
                 ],
                 [
                     'qbit_rename',
@@ -2189,7 +2176,6 @@
                     downloadIcon
                 );
 
-                // Восстановление состояния кнопки.
                 if (hash) {
                     restoreTorrentState(
                         addButton,
@@ -2464,6 +2450,9 @@
                 'Пакет плеера:',
                 cfg().player_package
             );
+
+            log('Создание дополнительных папок отключено');
+            log('contentLayout: NoSubfolder');
 
             log('Плагин загружен');
         } catch (error) {
