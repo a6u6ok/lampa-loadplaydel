@@ -1,18 +1,6 @@
+// ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
-//
-// Возможности:
-// - Добавление magnet-ссылок в qBittorrent
-// - Загрузка непосредственно в исходный каталог без папки торрента
-// - Отображение и восстановление прогресса
-// - Просмотр файлов внутри торрента
-// - Отдельная загрузка выбранного файла
-// - Запуск выбранной серии через SMB
-// - Исключение отдельного файла из загрузки
-// - Удаление всего торрента
-// - Настройки Lampa.Storage
-//
-// DDD Player: top.rootu.dddplayer
 // ============================================================================
 
 (function () {
@@ -890,11 +878,12 @@
     // УДАЛЕНИЕ ВСЕГО ТОРРЕНТА
     // ========================================================================
 
-    function qbDelete(hashOrMagnet) {
+    function qbDelete(hashOrMagnet, onComplete) {
         var hash = magnetHash(hashOrMagnet);
 
         if (!hash) {
             notify('Не удалось определить хеш торрента');
+            if (onComplete) onComplete(false);
             return;
         }
 
@@ -909,11 +898,13 @@
             function (response) {
                 if (response === null || response === undefined) {
                     notify('Нет связи с qBittorrent');
+                    if (onComplete) onComplete(false);
                     return;
                 }
 
                 if (/Forbidden|403|Fails/i.test(response)) {
                     notify('Ошибка удаления торрента');
+                    if (onComplete) onComplete(false);
                     return;
                 }
 
@@ -922,6 +913,8 @@
                         'Торрент и его файлы удалены' :
                         'Торрент удалён из списка'
                 );
+
+                if (onComplete) onComplete(true);
             }
         );
     }
@@ -938,8 +931,6 @@
 
         var file = cleanFsPath(fileName);
 
-        // При NoSubfolder файлы лежат непосредственно в savepath.
-        // Поэтому для SMB используем имя файла без внутренних папок торрента.
         file = fileBasename(file);
 
         var result = smbRoot +
@@ -1157,20 +1148,66 @@
         );
     }
 
-    // Установка приоритета только выбранной серии.
-    // Остальные файлы исключаются из загрузки.
     function downloadSingleFile(hash, selectedFile, allFiles, callback) {
         if (!selectedFile || selectedFile.id === undefined) {
             notify('Не удалось определить файл');
             return;
         }
 
+        if (Number(selectedFile.progress) >= 0.999999) {
+            notify(
+                'Файл уже скачан: ' +
+                fileBasename(selectedFile.name)
+            );
+
+            if (callback) callback(true);
+            return;
+        }
+
+        var alreadySelected = (
+            Number(selectedFile.priority) > 0
+        ) && allFiles.every(function (file) {
+            if (String(file.id) === String(selectedFile.id)) {
+                return true;
+            }
+
+            return Number(file.priority) === 0;
+        });
+
+        if (alreadySelected) {
+            notify(
+                'Файл уже выбран для загрузки: ' +
+                fileBasename(selectedFile.name)
+            );
+
+            if (callback) callback(true);
+            return;
+        }
+
         notify('Назначаю загрузку выбранной серии...');
 
         var index = 0;
+        var changed = false;
 
         function setNext() {
             if (index >= allFiles.length) {
+                if (Number(selectedFile.priority) > 0) {
+                    if (changed) {
+                        notify(
+                            'Выбрана загрузка: ' +
+                            fileBasename(selectedFile.name)
+                        );
+                    } else {
+                        notify(
+                            'Файл уже выбран: ' +
+                            fileBasename(selectedFile.name)
+                        );
+                    }
+
+                    if (callback) callback(true);
+                    return;
+                }
+
                 setFilePriority(
                     hash,
                     selectedFile.id,
@@ -1194,8 +1231,12 @@
 
             var file = allFiles[index++];
 
-            // Сначала исключаем остальные файлы из загрузки.
             if (String(file.id) === String(selectedFile.id)) {
+                setNext();
+                return;
+            }
+
+            if (Number(file.priority) === 0) {
                 setNext();
                 return;
             }
@@ -1204,7 +1245,8 @@
                 hash,
                 file.id,
                 0,
-                function () {
+                function (success) {
+                    if (success) changed = true;
                     setNext();
                 }
             );
@@ -1213,10 +1255,29 @@
         setNext();
     }
 
-    // Исключение отдельного файла из загрузки.
     function excludeSingleFile(hash, file, callback) {
         if (!file || file.id === undefined) {
             notify('Не удалось определить файл');
+            return;
+        }
+
+        if (Number(file.progress) >= 0.999999) {
+            notify(
+                'Файл уже скачан, исключение не требуется: ' +
+                fileBasename(file.name)
+            );
+
+            if (callback) callback(true);
+            return;
+        }
+
+        if (Number(file.priority) === 0) {
+            notify(
+                'Файл уже исключён: ' +
+                fileBasename(file.name)
+            );
+
+            if (callback) callback(true);
             return;
         }
 
@@ -1322,6 +1383,8 @@
         var torrentName = torrent.name || 'Торрент';
 
         var header =
+            '<div class="qbit-files__header
+                 var header =
             '<div class="qbit-files__header">' +
                 '<div class="qbit-files__torrent">' +
                     escapeHtml(torrentName) +
@@ -1561,211 +1624,207 @@
         );
     }
 
+    // ========================================================================
+    // ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
+    // ========================================================================
 
-// ========================================================================
-// ПОВТОРНОЕ ПОЛУЧЕНИЕ СПИСКА ФАЙЛОВ
-// ========================================================================
+    function requestTorrentFiles(hash, attempt, callback) {
+        attempt = attempt || 0;
 
-function requestTorrentFiles(hash, attempt, callback) {
-    attempt = attempt || 0;
+        qbRequest({
+            url: base() +
+                '/api/v2/torrents/files?hash=' +
+                encodeURIComponent(hash),
+            method: 'GET',
+            headers: authHeaders()
+        }, function (response) {
+            var files = [];
 
-    qbRequest({
-        url: base() +
-            '/api/v2/torrents/files?hash=' +
-            encodeURIComponent(hash),
-        method: 'GET',
-        headers: authHeaders()
-    }, function (response) {
-        var files = [];
-
-        try {
-            if (typeof response === 'string' && response.length) {
-                files = JSON.parse(response);
+            try {
+                if (typeof response === 'string' && response.length) {
+                    files = JSON.parse(response);
+                }
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] Ошибка разбора списка файлов:',
+                    response,
+                    error
+                );
             }
-        } catch (error) {
-            console.error(
-                '[qBittorrent] Ошибка разбора списка файлов:',
-                response,
-                error
-            );
-        }
 
-        if (Array.isArray(files) && files.length) {
-            log('Получено файлов:', files.length);
-            callback(files);
-            return;
-        }
-
-        log(
-            'Список файлов пуст. Попытка:',
-            attempt + 1,
-            'Хеш:',
-            hash,
-            'Ответ:',
-            response
-        );
-
-        if (attempt >= 7) {
-            callback([]);
-            return;
-        }
-
-        setTimeout(function () {
-            requestTorrentFiles(
-                hash,
-                attempt + 1,
-                callback
-            );
-        }, 1500);
-    });
-}
-
-
-// ========================================================================
-// ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК
-// ========================================================================
-
-function handlePlayerButton(hash) {
-    if (!hash) {
-        notify('Не удалось определить хеш торрента');
-        return;
-    }
-
-    log('Хеш из карточки:', hash);
-    debugNotify('Получаю информацию о торренте...');
-
-    qbRequest({
-        url: base() +
-            '/api/v2/torrents/info?hashes=' +
-            encodeURIComponent(hash),
-        method: 'GET',
-        headers: authHeaders()
-    }, function (infoResponse) {
-        if (!infoResponse) {
-            notify('Не удалось получить информацию о торренте');
-            return;
-        }
-
-        var torrent;
-
-        try {
-            var info = JSON.parse(infoResponse);
-
-            var torrents = Array.isArray(info) ?
-                info :
-                (info.torrents || []);
-
-            if (!torrents.length) {
-                notify('Торрент не найден в qBittorrent');
-                log('Ответ torrents/info:', infoResponse);
+            if (Array.isArray(files) && files.length) {
+                log('Получено файлов:', files.length);
+                callback(files);
                 return;
             }
 
-            torrent = torrents[0];
-
-        } catch (error) {
-            console.error(
-                '[qBittorrent] Ошибка разбора информации:',
-                error
+            log(
+                'Список файлов пуст. Попытка:',
+                attempt + 1,
+                'Хеш:',
+                hash,
+                'Ответ:',
+                response
             );
 
-            notify('Ошибка чтения информации о торренте');
-            return;
-        }
-
-        // Используем настоящий хеш из qBittorrent.
-        var actualHash = String(
-            torrent.hash || hash
-        ).trim().toLowerCase();
-
-        log('Хеш qBittorrent:', actualHash);
-        log('Название:', torrent.name);
-        log('Прогресс:', torrent.progress);
-        log('Метаданные:', torrent.hasMetadata);
-
-        if (!actualHash) {
-            notify('qBittorrent не вернул хеш торрента');
-            return;
-        }
-
-        if (Number(torrent.progress) < 0.999999) {
-            notify('Торрент ещё не загружен полностью');
-            return;
-        }
-
-        debugNotify('Получаю список файлов...');
-
-        requestTorrentFiles(
-            actualHash,
-            0,
-            function (files) {
-                if (!files || !files.length) {
-                    notify(
-                        'qBittorrent не вернул список файлов. ' +
-                        'Проверьте метаданные и хеш торрента.'
-                    );
-
-                    log('Пустой список файлов. Хеш:', actualHash);
-                    return;
-                }
-
-                log('Всего файлов:', files.length);
-
-                var videoFiles = files.filter(function (file) {
-                    var name = String(file.name || '');
-
-                    if (!isVideoFile(name)) return false;
-
-                    if (Number(file.progress) < 0.999999) {
-                        return false;
-                    }
-
-                    if (
-                        /sample|trailer|preview|прочее/i.test(name)
-                    ) {
-                        return false;
-                    }
-
-                    return true;
-                });
-
-                if (!videoFiles.length) {
-                    notify(
-                        'Нет полностью загруженных видеофайлов'
-                    );
-                    return;
-                }
-
-                videoFiles.sort(compareVideoFiles);
-
-                // Пока запускаем первую загруженную серию.
-                var selectedFile = videoFiles[0];
-
-                var fileTitle = String(selectedFile.name)
-                    .replace(/\\/g, '/')
-                    .split('/')
-                    .pop();
-
-                var smbUri = makeSmbUri(
-                    selectedFile.name,
-                    torrent
-                );
-
-                log('Выбрана серия:', selectedFile.name);
-                log('Размер:', formatSize(selectedFile.size));
-                log('SMB URI:', smbUri);
-
-                notify('Запускаю: ' + fileTitle);
-
-                openFileInPlayer(
-                    smbUri,
-                    cfg().player_package,
-                    fileTitle
-                );
+            if (attempt >= 7) {
+                callback([]);
+                return;
             }
-        );
-    });
-}
+
+            setTimeout(function () {
+                requestTorrentFiles(
+                    hash,
+                    attempt + 1,
+                    callback
+                );
+            }, 1500);
+        });
+    }
+
+    // ========================================================================
+    // ПОЛУЧЕНИЕ ФАЙЛОВ И ЗАПУСК
+    // ========================================================================
+
+    function handlePlayerButton(hash) {
+        if (!hash) {
+            notify('Не удалось определить хеш торрента');
+            return;
+        }
+
+        log('Хеш из карточки:', hash);
+        debugNotify('Получаю информацию о торренте...');
+
+        qbRequest({
+            url: base() +
+                '/api/v2/torrents/info?hashes=' +
+                encodeURIComponent(hash),
+            method: 'GET',
+            headers: authHeaders()
+        }, function (infoResponse) {
+            if (!infoResponse) {
+                notify('Не удалось получить информацию о торренте');
+                return;
+            }
+
+            var torrent;
+
+            try {
+                var info = JSON.parse(infoResponse);
+
+                var torrents = Array.isArray(info) ?
+                    info :
+                    (info.torrents || []);
+
+                if (!torrents.length) {
+                    notify('Торрент не найден в qBittorrent');
+                    log('Ответ torrents/info:', infoResponse);
+                    return;
+                }
+
+                torrent = torrents[0];
+
+            } catch (error) {
+                console.error(
+                    '[qBittorrent] Ошибка разбора информации:',
+                    error
+                );
+
+                notify('Ошибка чтения информации о торренте');
+                return;
+            }
+
+            var actualHash = String(
+                torrent.hash || hash
+            ).trim().toLowerCase();
+
+            log('Хеш qBittorrent:', actualHash);
+            log('Название:', torrent.name);
+            log('Прогресс:', torrent.progress);
+            log('Метаданные:', torrent.hasMetadata);
+
+            if (!actualHash) {
+                notify('qBittorrent не вернул хеш торрента');
+                return;
+            }
+
+            if (Number(torrent.progress) < 0.999999) {
+                notify('Торрент ещё не загружен полностью');
+                return;
+            }
+
+            debugNotify('Получаю список файлов...');
+
+            requestTorrentFiles(
+                actualHash,
+                0,
+                function (files) {
+                    if (!files || !files.length) {
+                        notify(
+                            'qBittorrent не вернул список файлов. ' +
+                            'Проверьте метаданные и хеш торрента.'
+                        );
+
+                        log('Пустой список файлов. Хеш:', actualHash);
+                        return;
+                    }
+
+                    log('Всего файлов:', files.length);
+
+                    var videoFiles = files.filter(function (file) {
+                        var name = String(file.name || '');
+
+                        if (!isVideoFile(name)) return false;
+
+                        if (Number(file.progress) < 0.999999) {
+                            return false;
+                        }
+
+                        if (
+                            /sample|trailer|preview|прочее/i.test(name)
+                        ) {
+                            return false;
+                        }
+
+                        return true;
+                    });
+
+                    if (!videoFiles.length) {
+                        notify(
+                            'Нет полностью загруженных видеофайлов'
+                        );
+                        return;
+                    }
+
+                    videoFiles.sort(compareVideoFiles);
+
+                    var selectedFile = videoFiles[0];
+
+                    var fileTitle = String(selectedFile.name)
+                        .replace(/\\/g, '/')
+                        .split('/')
+                        .pop();
+
+                    var smbUri = makeSmbUri(
+                        selectedFile.name,
+                        torrent
+                    );
+
+                    log('Выбрана серия:', selectedFile.name);
+                    log('Размер:', formatSize(selectedFile.size));
+                    log('SMB URI:', smbUri);
+
+                    notify('Запускаю: ' + fileTitle);
+
+                    openFileInPlayer(
+                        smbUri,
+                        cfg().player_package,
+                        fileTitle
+                    );
+                }
+            );
+        });
+    }
 
     // ========================================================================
     // ОБРАБОТКА НАЖАТИЙ
@@ -1842,6 +1901,17 @@ function handlePlayerButton(hash) {
             '<span class="qbit-btn-text">' +
             percent + '%' +
             '</span>';
+    }
+
+    // Сброс кнопки в исходное состояние «qB».
+    function resetButtonToQb(button, iconSvg) {
+        if (!button) return;
+
+        stopProgressPolling(button);
+
+        button.dataset.qbitAdding = '0';
+
+        applyProgressToButton(button, null, iconSvg);
     }
 
     // ========================================================================
@@ -1940,8 +2010,7 @@ function handlePlayerButton(hash) {
             );
         });
     }
-
-    // ========================================================================
+        // ========================================================================
     // РЕГИСТРАЦИЯ НАСТРОЕК
     // ========================================================================
 
@@ -2207,27 +2276,6 @@ function handlePlayerButton(hash) {
 
                 playerButton.title = 'Файлы торрента';
 
-                // Кнопка удаления всего торрента.
-                var deleteButton = createButton(
-                    'qbit-direct-delete',
-                    '',
-                    function () {
-                        if (!requireSetup()) return;
-
-                        var target = hash || magnet;
-
-                        if (!target) {
-                            notify('Не удалось определить торрент');
-                            return;
-                        }
-
-                        qbDelete(target);
-                    },
-                    deleteIcon
-                );
-
-                deleteButton.title = 'Удалить торрент';
-
                 // Кнопка добавления торрента.
                 var addButton = createButton(
                     'qbit-direct-add',
@@ -2287,6 +2335,40 @@ function handlePlayerButton(hash) {
                 );
 
                 addButton.title = 'Добавить торрент';
+
+                // Кнопка удаления всего торрента.
+                var deleteButton = createButton(
+                    'qbit-direct-delete',
+                    '',
+                    function () {
+                        if (!requireSetup()) return;
+
+                        var target = hash || magnet;
+
+                        if (!target) {
+                            notify('Не удалось определить торрент');
+                            return;
+                        }
+
+                        qbDelete(target, function (success) {
+                            if (!success) return;
+
+                            // После удаления торрента возвращаем
+                            // кнопку добавления в исходное «qB».
+                            resetButtonToQb(
+                                addButton,
+                                downloadIcon
+                            );
+
+                            // Обнуляем хеш, чтобы дальнейшие
+                            // нажатия не ссылались на удалённый торрент.
+                            hash = '';
+                        });
+                    },
+                    deleteIcon
+                );
+
+                deleteButton.title = 'Удалить торрент';
 
                 if (hash) {
                     restoreTorrentState(
@@ -2444,7 +2526,6 @@ function handlePlayerButton(hash) {
                 'font-style:italic;' +
             '}' +
 
-            // Окно файлов.
             '.qbit-files {' +
                 'padding:12px;' +
                 'max-height:75vh;' +
@@ -2563,7 +2644,6 @@ function handlePlayerButton(hash) {
                 'padding:10px;' +
             '}' +
 
-            // Мастер настройки.
             '.qbit-wizard {' +
                 'padding:20px;' +
             '}' +
@@ -2690,3 +2770,4 @@ function handlePlayerButton(hash) {
     }
 
 })();
+    
