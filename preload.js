@@ -2,6 +2,7 @@
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
 // Фокус кнопок — зелёный фон (по классу .focus от Lampa), центрирование сохранено
+// Карточные кнопки qB/Play/корзина — без зелёного фона при выделении
 // ============================================================================
 
 (function () {
@@ -1079,8 +1080,8 @@
             '.qbit-direct-host{position:relative;margin-right:32px!important}' +
             '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:-28px;top:0;bottom:0;z-index:999;gap:6px}' +
             '.qbit-direct-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;width:24px;height:24px;background:none!important;border:none!important;border-radius:0!important;padding:0;cursor:pointer;box-sizing:border-box;transition:transform .2s}' +
-            // Фокус карточных кнопок: зелёная подложка только по классу .focus
-            '.qbit-direct-btn.focus{transform:scale(1.25);outline:none!important;box-shadow:none!important;background:rgba(39,174,96,.35)!important;border-radius:4px;z-index:1000}' +
+            // Фокус карточных кнопок: только увеличение, без фона и рамок
+            '.qbit-direct-btn.focus{transform:scale(1.25);outline:none!important;box-shadow:none!important;background:none!important;border-radius:0!important;z-index:1000}' +
             '.qbit-direct-btn svg{width:20px;height:20px;fill:#27ae60}' +
             '.qbit-btn-text{font-size:8px;font-weight:bold;margin-top:-2px;line-height:1;color:#27ae60}' +
             '.qbit-direct-player svg{fill:#3498db}' +
@@ -1109,7 +1110,7 @@
             // Недогруженная кнопка без фокуса — тусклая
             '.qbit-file__button:not(.qbit-file__play--ready){background:rgba(255,255,255,.08)!important;color:rgba(255,255,255,.35)!important}' +
             '.qbit-file__button:disabled{opacity:.5;cursor:default}' +
-            // Фокус (класс .focus от Lampa) — зелёный фон, белая рамки нет.
+            // Фокус (класс .focus от Lampa) — зелёный фон, белой рамки нет.
             // Селектор :focus намеренно НЕ используется: реальный DOM-фокус
             // может оставаться на первой кнопке, пока Lampa двигает .focus.
             '.qbit-file__button.focus,.qbit-files__refresh.focus{' +
