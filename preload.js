@@ -1,3 +1,4 @@
+
 // ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
@@ -628,7 +629,6 @@
                 return cb && cb(false);
             }
 
-            // Убираем хеш из списка автоматического контроля.
             forgetManagedTorrent(hash);
 
             notify(cfg().delFiles ?
@@ -652,18 +652,15 @@
             }
         }
 
-        if (!Array.isArray(hashes)) hashes = [];
+        if (!Array.isArray(hashes)) return [];
 
         return hashes.map(function (h) {
             return String(h || '').trim().toLowerCase();
-        }).filter(function (h) {
-            return !!h;
-        });
+        }).filter(Boolean);
     }
 
     function rememberManagedTorrent(hash) {
         hash = String(hash || '').trim().toLowerCase();
-
         if (!hash) return;
 
         var hashes = getManagedHashes();
@@ -671,7 +668,6 @@
         if (hashes.indexOf(hash) === -1) {
             hashes.push(hash);
             storeSet(AUTO_STOP_KEY, hashes);
-
             log('Торрент добавлен в автоматический контроль:', hash);
         }
     }
@@ -679,42 +675,46 @@
     function forgetManagedTorrent(hash) {
         hash = String(hash || '').trim().toLowerCase();
 
-        var hashes = getManagedHashes().filter(function (h) {
+        storeSet(AUTO_STOP_KEY, getManagedHashes().filter(function (h) {
             return h !== hash;
-        });
+        }));
 
-        storeSet(AUTO_STOP_KEY, hashes);
-
-        if (autoStopping[hash])
-            delete autoStopping[hash];
+        delete autoStopping[hash];
     }
 
+    // Для qBittorrent 4.6.x используется /pause.
+    // Пустой ответ API не считается подтверждением остановки.
     function qbStopTorrent(hash, cb) {
         hash = String(hash || '').trim().toLowerCase();
 
         if (!hash) return cb && cb(false);
 
         qbRequest({
-            url: base() + '/api/v2/torrents/stop',
+            url: base() + '/api/v2/torrents/pause',
             method: 'POST',
             body: 'hashes=' + encodeURIComponent(hash),
             headers: authHeaders(),
             emptySuccessAfter: 1500
         }, function (resp) {
-            var ok = resp !== null &&
-                !/Forbidden|403|Fails|Errored/i.test(String(resp));
-
-            if (ok) {
-                log('Раздача остановлена:', hash);
-            } else {
-                console.error(
-                    '[qBittorrent] Не удалось остановить раздачу:',
-                    hash,
-                    resp
-                );
+            if (resp === null || /Forbidden|403|Fails|Errored/i.test(String(resp))) {
+                log('Команда остановки не выполнена:', hash, resp);
+                return cb && cb(false);
             }
 
-            if (cb) cb(ok);
+            // Проверяем состояние непосредственно на сервере.
+            setTimeout(function () {
+                torrentInfo(hash, function (torrent) {
+                    var state = String(torrent && torrent.state || '');
+                    var stopped = /^(paused|stopped)/i.test(state);
+
+                    log('Проверка остановки:', hash, state || 'нет ответа');
+
+                    if (!stopped)
+                        log('Остановка пока не подтверждена:', hash);
+
+                    cb && cb(stopped);
+                });
+            }, 800);
         });
     }
 
@@ -722,7 +722,6 @@
         if (autoStopChecking) return;
 
         var hashes = getManagedHashes();
-
         if (!hashes.length) return;
 
         autoStopChecking = true;
@@ -739,52 +738,57 @@
 
             hashes.forEach(function (hash) {
                 var torrent = torrents.filter(function (t) {
-                    return String(t.hash || '').trim().toLowerCase() === hash;
+                    return [
+                        t.hash,
+                        t.infohash_v1,
+                        t.infohash_v2
+                    ].some(function (v) {
+                        return String(v || '').trim().toLowerCase() === hash;
+                    });
                 })[0];
 
-                // Если торрент удалён из qBittorrent,
-                // удаляем его хеш из списка контроля.
+                // Удалённый торрент больше не контролируем.
                 if (!torrent) {
                     forgetManagedTorrent(hash);
                     return;
                 }
 
-                var progress = Number(torrent.progress) || 0;
+                var progress = Number(torrent.progress);
                 var state = String(torrent.state || '');
 
-                // Не трогаем торрент, пока он не загружен полностью.
-                if (progress < 0.999999) return;
+                // Не останавливаем торрент при неизвестном прогрессе.
+                if (!isFinite(progress) || progress < 0.999999) return;
 
-                // Состояния активной или ожидающей раздачи.
-                var seedingStates = [
-                    'uploading',
-                    'stalledUP',
-                    'queuedUP',
-                    'forcedUP'
-                ];
+                // Если он уже остановлен, просто снимаем с контроля.
+                if (/^(paused|stopped)/i.test(state)) {
+                    forgetManagedTorrent(hash);
+                    return;
+                }
 
-                if (seedingStates.indexOf(state) === -1) return;
+                // Обрабатываем только состояния раздачи.
+                if (!/^(uploading|stalledUP|queuedUP|forcedUP)$/i.test(state))
+                    return;
 
+                // Не отправляем повторную команду, пока выполняется проверка.
                 if (autoStopping[hash]) return;
 
                 autoStopping[hash] = true;
 
                 log(
-                    'Торрент достиг 100%. Останавливаю раздачу:',
+                    'Торрент достиг 100%. Останавливаю:',
                     torrent.name,
                     'Состояние:',
                     state
                 );
 
                 qbStopTorrent(hash, function (ok) {
-                    autoStopping[hash] = false;
-
                     if (ok) {
                         forgetManagedTorrent(hash);
-
-                        notify(
-                            'Торрент загружен на 100%. Раздача остановлена.'
-                        );
+                        notify('Торрент загружен на 100%. Раздача остановлена.');
+                    } else {
+                        // Оставляем хеш в списке: следующая проверка повторит попытку.
+                        delete autoStopping[hash];
+                        log('Остановка не подтверждена. Повтор через интервал проверки:', hash);
                     }
                 });
             });
@@ -796,13 +800,8 @@
 
         log('Запуск автоматического контроля раздачи');
 
-        // Первая проверка сразу после запуска плагина.
         checkAutoStop();
-
-        // Далее проверяем каждые 5 секунд.
-        autoStopTimer = setInterval(function () {
-            checkAutoStop();
-        }, AUTO_STOP_INTERVAL);
+        autoStopTimer = setInterval(checkAutoStop, AUTO_STOP_INTERVAL);
     }
 
     /* ---------- SMB и плеер ---------- */
@@ -1002,7 +1001,6 @@
         if (!el || !box) return;
 
         var row = el.closest ? el.closest('.qbit-file') : null;
-
         if (!row) return;
 
         var outer = box.getBoundingClientRect();
@@ -1216,7 +1214,6 @@
             if (!current || current === lastFocused) return;
 
             lastFocused = current;
-
             correctFocusPosition(current);
         }, 80);
     }
@@ -1254,7 +1251,6 @@
         if (!requireSetup()) return;
 
         log('Открытие списка серий по кнопке Play. Хеш:', hash);
-
         debugNotify('Получаю список серий...');
 
         torrentInfo(hash, function (t) {
@@ -1285,7 +1281,6 @@
             var now = Date.now();
 
             if (now - last < LOCK_MS) return;
-
             last = now;
 
             if (e) {
@@ -1315,12 +1310,10 @@
                 '<span class="qbit-btn-text">qB</span>';
         } else if (p >= 1) {
             btn.classList.add('qbit-done');
-
             btn.innerHTML = icon +
                 '<span class="qbit-btn-text">Готов</span>';
         } else {
             btn.classList.add('qbit-loading');
-
             btn.innerHTML = icon +
                 '<span class="qbit-btn-text">' +
                 Math.max(0, Math.min(99, Math.floor(p * 100))) +
@@ -1365,9 +1358,7 @@
                     if (p >= 1) {
                         stopPoll(btn);
                         setProgress(btn, 1, icon);
-
                         notify('Загрузка завершена!');
-
                         return;
                     }
 
@@ -1393,11 +1384,8 @@
 
             setProgress(btn, p, icon);
 
-            // Если торрент найден в qBittorrent,
-            // добавляем его в автоматический контроль.
-            if (p !== null) {
+            if (p !== null)
                 rememberManagedTorrent(hash);
-            }
 
             if (p !== null && p < 1)
                 startPoll(btn, hash, item, icon);
@@ -1426,7 +1414,6 @@
         }
 
         var el = document.createElement('div');
-
         el.className = 'qbit-wizard';
 
         el.innerHTML =
@@ -1547,7 +1534,6 @@
 
                 setTimeout(function () {
                     var item = document.querySelector('[data-component="qbit_direct"]');
-
                     if (item) item.click();
                 }, 100);
             });
@@ -1563,7 +1549,6 @@
 
             TEXT_FIELDS.forEach(function (name) {
                 var item = document.querySelector('[data-name="' + name + '"]');
-
                 if (!item) return;
 
                 var v = item.querySelector('.value') ||
@@ -1598,15 +1583,12 @@
 
         if (text) {
             var s = document.createElement('span');
-
             s.textContent = text;
             s.className = 'qbit-btn-text';
-
             b.appendChild(s);
         }
 
         bindPress(b, handler);
-
         return b;
     }
 
@@ -1620,7 +1602,6 @@
                     return;
 
                 var item = event.item.jquery ? event.item[0] : event.item;
-
                 if (!item) return;
 
                 var data = event.element || {};
@@ -1645,7 +1626,6 @@
                             '';
 
                 var actions = document.createElement('div');
-
                 actions.className = 'qbit-direct-actions';
 
                 var addBtn = makeBtn('qbit-direct-add', 'qB', function () {
@@ -1658,7 +1638,6 @@
                         return notify('Не найдена magnet-ссылка');
 
                     addBtn.dataset.qbitAdding = '1';
-
                     setProgress(addBtn, 0, SVG_DOWN);
 
                     qbAdd(magnet, title, function (ok) {
@@ -1673,13 +1652,10 @@
 
                         if (!hash) {
                             notify('Торрент добавлен, но хеш не определён');
-
                             return setProgress(addBtn, null, SVG_DOWN);
                         }
 
-                        // Сохраняем торрент для автоматической остановки.
                         rememberManagedTorrent(hash);
-
                         startPoll(addBtn, hash, item, SVG_DOWN);
                     });
                 }, SVG_DOWN);
@@ -1707,9 +1683,7 @@
                         if (!ok) return;
 
                         stopPoll(addBtn);
-
                         setProgress(addBtn, null, SVG_DOWN);
-
                         hash = '';
                     });
                 }, SVG_DEL);
@@ -1739,7 +1713,6 @@
             return;
 
         var s = document.createElement('style');
-
         s.id = 'qbit-direct-style';
 
         s.textContent =
@@ -1803,11 +1776,9 @@
             initTorrentButton();
             addStyles();
 
-            // Запускаем автоматический контроль раздачи.
             startAutoStopMonitor();
 
             syncPlaceholders();
-
             setInterval(syncPlaceholders, 1500);
 
             log('Путь загрузки:', cfg().savepath || '(не задан)');
