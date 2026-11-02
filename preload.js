@@ -719,81 +719,83 @@
     }
 
     function checkAutoStop() {
-        if (autoStopChecking) return;
+    if (autoStopChecking) return;
 
-        var hashes = getManagedHashes();
-        if (!hashes.length) return;
+    // Проверяем, что адрес qBittorrent настроен.
+    if (!base()) return;
 
-        autoStopChecking = true;
+    autoStopChecking = true;
 
-        qbGet('/api/v2/torrents/info', function (resp) {
-            autoStopChecking = false;
+    // Получаем ВСЕ торренты, а не только сохранённые в AUTO_STOP_KEY.
+    qbGet('/api/v2/torrents/info', function (resp) {
+        autoStopChecking = false;
 
-            var torrents = parseTorrents(resp);
+        var torrents = parseTorrents(resp);
 
-            if (!torrents) {
-                log('Не удалось получить список торрентов для автопроверки');
+        if (!torrents) {
+            log('Не удалось получить полный список торрентов для автопроверки');
+            return;
+        }
+
+        log('Автопроверка: получено торрентов:', torrents.length);
+
+        torrents.forEach(function (torrent) {
+            var hash = String(torrent.hash || '').trim().toLowerCase();
+
+            if (!hash) return;
+
+            var progress = Number(torrent.progress);
+            var state = String(torrent.state || '');
+
+            // Проверяем только полностью загруженные торренты.
+            if (!isFinite(progress) || progress < 0.999999) return;
+
+            // Уже остановленные торренты не трогаем.
+            if (/^(paused|stopped)/i.test(state)) {
+                forgetManagedTorrent(hash);
                 return;
             }
 
-            hashes.forEach(function (hash) {
-                var torrent = torrents.filter(function (t) {
-                    return [
-                        t.hash,
-                        t.infohash_v1,
-                        t.infohash_v2
-                    ].some(function (v) {
-                        return String(v || '').trim().toLowerCase() === hash;
-                    });
-                })[0];
+            // Останавливаем только торренты, которые раздают.
+            if (!/^(uploading|stalledUP|queuedUP|forcedUP)$/i.test(state))
+                return;
 
-                // Удалённый торрент больше не контролируем.
-                if (!torrent) {
+            // Не отправляем повторную команду для одного торрента.
+            if (autoStopping[hash]) return;
+
+            autoStopping[hash] = true;
+
+            log(
+                'Обнаружен полностью загруженный торрент. Останавливаю:',
+                torrent.name,
+                'Хеш:',
+                hash,
+                'Состояние:',
+                state
+            );
+
+            qbStopTorrent(hash, function (ok) {
+                if (ok) {
                     forgetManagedTorrent(hash);
-                    return;
+
+                    notify(
+                        'Торрент загружен на 100%. Раздача остановлена: ' +
+                        (torrent.name || hash)
+                    );
+                } else {
+                    delete autoStopping[hash];
+
+                    log(
+                        'Остановка не подтверждена. Повторная попытка через',
+                        AUTO_STOP_INTERVAL,
+                        'мс:',
+                        torrent.name || hash
+                    );
                 }
-
-                var progress = Number(torrent.progress);
-                var state = String(torrent.state || '');
-
-                // Не останавливаем торрент при неизвестном прогрессе.
-                if (!isFinite(progress) || progress < 0.999999) return;
-
-                // Если он уже остановлен, просто снимаем с контроля.
-                if (/^(paused|stopped)/i.test(state)) {
-                    forgetManagedTorrent(hash);
-                    return;
-                }
-
-                // Обрабатываем только состояния раздачи.
-                if (!/^(uploading|stalledUP|queuedUP|forcedUP)$/i.test(state))
-                    return;
-
-                // Не отправляем повторную команду, пока выполняется проверка.
-                if (autoStopping[hash]) return;
-
-                autoStopping[hash] = true;
-
-                log(
-                    'Торрент достиг 100%. Останавливаю:',
-                    torrent.name,
-                    'Состояние:',
-                    state
-                );
-
-                qbStopTorrent(hash, function (ok) {
-                    if (ok) {
-                        forgetManagedTorrent(hash);
-                        notify('Торрент загружен на 100%. Раздача остановлена.');
-                    } else {
-                        // Оставляем хеш в списке: следующая проверка повторит попытку.
-                        delete autoStopping[hash];
-                        log('Остановка не подтверждена. Повтор через интервал проверки:', hash);
-                    }
-                });
             });
         });
-    }
+    });
+}
 
     function startAutoStopMonitor() {
         if (autoStopTimer) return;
