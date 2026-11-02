@@ -14,7 +14,8 @@ var DEBUG=false,
     FILES_RETRY_N=7;
 
 var AUTO_STOP_KEY='qbit_auto_stop_hashes',
-    AUTO_STOP_INTERVAL=5000;
+    AUTO_STOP_INTERVAL=5000,
+    AUTO_STOP_ALL_KEY='qbit_stop_all';
 
 var reqId=0,
     sid='',
@@ -37,11 +38,9 @@ var VIDEO=[
 var TEXT_FIELDS=[
     'qbit_url',
     'qbit_user',
-    'qbit_pass',
     'qbit_savepath',
     'qbit_smb_file',
-    'qbit_smb_user',
-    'qbit_smb_pass'
+    'qbit_smb_user'
 ];
 
 var SVG_STAR='<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
@@ -112,6 +111,7 @@ function cfg(){
         user:String(storeGet('qbit_user','')||''),
         pass:String(storeGet('qbit_pass','')||''),
         bypass:isTrue(storeGet('qbit_bypass',true),true),
+        stopAll:isTrue(storeGet(AUTO_STOP_ALL_KEY,false),false),
         savepath:String(storeGet('qbit_savepath','')||'').trim(),
         smb:String(storeGet('qbit_smb_file','')||'').trim(),
         smbAnonymous:isTrue(storeGet('qbit_smb_anonymous',false),false),
@@ -520,9 +520,16 @@ function authHeaders(){
 function doLogin(cb){
     var c=cfg();
 
-    if(c.bypass||!c.user){
+    if(c.bypass){
         loggedIn=true;
         return cb(true);
+    }
+
+    if(!c.user||!c.pass){
+        loggedIn=false;
+        sid='';
+        notify('Укажите логин и пароль qBittorrent или включите обход авторизации');
+        return cb(false);
     }
 
     nativeHttp({
@@ -539,17 +546,14 @@ function doLogin(cb){
             !/^Ok\./i.test(String(resp).trim())
         ){
             loggedIn=false;
+            sid='';
             notify('Ошибка авторизации qBittorrent');
             return cb(false);
         }
 
         var m=/SID=([^;\s]+)/i.exec(String(resp));
 
-        if(m)
-            sid=m[1];
-        else
-            log('SID не получен из ответа — проверьте обход аутентификации');
-
+        sid=m?m[1]:'';
         loggedIn=true;
         cb(true);
     });
@@ -558,8 +562,15 @@ function doLogin(cb){
 function qbRequest(request,cb,retry){
     var c=cfg();
 
-    if(c.bypass||!c.user)
+    if(c.bypass)
         return nativeHttp(request,cb);
+
+    if(!c.user||!c.pass){
+        loggedIn=false;
+        sid='';
+        notify('Для доступа к qBittorrent укажите логин и пароль либо включите обход авторизации');
+        return cb(null);
+    }
 
     function send(){
         request.headers=authHeaders();
@@ -634,13 +645,13 @@ function addBody(magnet,title){
         'sequentialDownload=false'
     ];
 
-    /* Переименование всегда включено. */
     if(title)
         p.push('rename='+encodeURIComponent(title));
 
     return p.join('&');
 }
-   function torrentInfo(hash,cb){
+
+function torrentInfo(hash,cb){
     var target=String(hash||'').trim().toLowerCase();
 
     if(!target)return cb&&cb(null);
@@ -779,7 +790,6 @@ function qbAdd(magnet,title,cb){
                     return finish(false,null,'Ошибка добавления: '+resp);
                 }
 
-                /* Проверка добавления выполняется всегда. */
                 verifyAdded(hash,0,function(found){
                     if(!found){
                         return finish(
@@ -809,8 +819,7 @@ function qbAdd(magnet,title,cb){
         );
     });
 }
-
-function qbDelete(hashOrMagnet,cb){
+    function qbDelete(hashOrMagnet,cb){
     var hash=magnetHash(hashOrMagnet);
 
     if(!hash){
@@ -925,6 +934,11 @@ function qbStopTorrent(hash,cb){
     });
 }
 
+/*
+ * Автоматическая остановка раздач.
+ * stopAll=true  — все завершённые раздачи qBittorrent.
+ * stopAll=false — только торренты, добавленные через Lampa.
+ */
 function checkAutoStop(){
     if(autoStopChecking||!base())return;
 
@@ -940,11 +954,27 @@ function checkAutoStop(){
             return;
         }
 
-        log('Автопроверка: получено торрентов:',torrents.length);
+        var managed=getManagedHashes(),
+            stopAll=cfg().stopAll;
+
+        log(
+            'Автопроверка: получено торрентов:',
+            torrents.length,
+            'Режим:',
+            stopAll?'все торренты':'только Lampa'
+        );
 
         torrents.forEach(function(t){
             var hash=String(t.hash||'').trim().toLowerCase();
+
             if(!hash)return;
+
+            /*
+             * В режиме «Нет» игнорируем все торренты,
+             * которых нет в сохранённом списке Lampa.
+             */
+            if(!stopAll&&managed.indexOf(hash)===-1)
+                return;
 
             var progress=Number(t.progress);
             var state=String(t.state||'');
@@ -1489,22 +1519,33 @@ function refreshFiles(hash){
     });
 }
 
+/*
+ * Защита от устаревших ответов:
+ * если пользователь открыл другой торрент,
+ * старый запрос больше не сможет заменить новый список.
+ */
 function openFiles(hash){
     if(!hash)
         return notify('Не удалось определить хеш торрента');
 
     if(!requireSetup())return;
 
+    var req=++modalReq;
+
     log('Открытие списка серий по кнопке Play. Хеш:',hash);
     debugNotify('Получаю список серий...');
 
     torrentInfo(hash,function(t){
+        if(req!==modalReq)return;
+
         if(!t)
             return notify('Торрент не найден в qBittorrent');
 
         var h=String(t.hash||hash).trim().toLowerCase();
 
         torrentFiles(h,0,function(files){
+            if(req!==modalReq)return;
+
             if(!files||!files.length)
                 return notify('Не удалось получить список файлов торрента');
 
@@ -1518,8 +1559,7 @@ function openFiles(hash){
         });
     });
 }
-
-function bindPress(el,handler){
+    function bindPress(el,handler){
     var last=0;
 
     function wrap(e){
@@ -1626,6 +1666,11 @@ function startPoll(btn,hash,item,icon){
     },POLL_MS);
 }
 
+/*
+ * Важно: здесь НЕ добавляем торрент в список управляемых.
+ * В список попадают только торренты, для которых пользователь
+ * нажал кнопку добавления в Lampa.
+ */
 function restoreState(btn,hash,item,icon){
     if(!btn||!hash)return;
 
@@ -1641,14 +1686,12 @@ function restoreState(btn,hash,item,icon){
 
         setProgress(btn,p,icon);
 
-        if(p!==null)
-            rememberManagedTorrent(hash);
-
         if(p!==null&&p<1)
             startPoll(btn,hash,item,icon);
     });
 }
-   function openWizard(){
+
+function openWizard(){
     if(!window.Lampa||!Lampa.Modal)
         return notify('Настройки: Настройки → qBittorrent');
 
@@ -1826,7 +1869,7 @@ function registerSettings(){
                 'Адрес сервера qBittorrent',
                 'Пример: '+EXAMPLE_URL
             ],
-             [
+            [
                 'qbit_bypass',
                 'trigger',
                 true,
@@ -1846,6 +1889,13 @@ function registerSettings(){
                 '',
                 'Пароль qBittorrent',
                 'Пароль Web UI'
+            ],
+            [
+                AUTO_STOP_ALL_KEY,
+                'trigger',
+                false,
+                'Останавливать все раздачи qBittorrent',
+                'Да — все завершённые раздачи. Нет — только торренты, добавленные через Lampa'
             ],
             [
                 'qbit_savepath',
@@ -2118,6 +2168,10 @@ function initTorrentButton(){
                             return setProgress(addBtn,null,SVG_DOWN);
                         }
 
+                        /*
+                         * Добавляем в управляемые только после нажатия
+                         * кнопки qB в карточке Lampa.
+                         */
                         rememberManagedTorrent(hash);
 
                         var p=Number(torrent.progress);
@@ -2265,7 +2319,13 @@ function init(){
         );
 
         log('Анонимный SMB:',cfg().smbAnonymous?'включён':'выключен');
-        log('Автоматическая остановка раздачи: включена');
+
+        log(
+            'Автоматическая остановка:',
+            cfg().stopAll
+                ?'все завершённые раздачи qBittorrent'
+                :'только торренты, добавленные через Lampa'
+        );
 
         log(
             'Интервал проверки:',
@@ -2313,4 +2373,4 @@ if(window.Lampa&&Lampa.Listener){
     },5000);
 }
 
-})(); 
+})();
