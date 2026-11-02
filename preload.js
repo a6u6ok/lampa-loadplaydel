@@ -1387,6 +1387,9 @@ function playTorrentFile(file, torrent) {
                 'Сезон ' + episode.season + ' · Серия ' + episode.episode : '';
             var status = ready ? 'Загружено' : 'Загрузка: ' + progress + '%';
             var idAttribute = fileId === null ? '' : String(fileId);
+            
+            // Добавляем класс заливки, если файл готов
+            var btnClass = 'qbit-file__button qbit-file__play selector' + (ready ? ' qbit-file__play--ready' : '');
 
             list +=
                 '<div class="qbit-file" data-file-id="' + escapeHtml(idAttribute) + '">' +
@@ -1397,9 +1400,9 @@ function playTorrentFile(file, torrent) {
                         '<div class="qbit-file__progress"><div style="width:' + progress + '%"></div></div>' +
                     '</div>' +
                     '<div class="qbit-file__actions">' +
-                        '<button type="button" class="qbit-file__button qbit-file__play selector"' +
+                        '<button type="button" class="' + btnClass + '"' +
                         ' tabindex="0" data-action="play" data-id="' + escapeHtml(idAttribute) + '"' +
-                        (ready ? '' : ' disabled') + '>Играть</button>' +
+                        (ready ? '' : ' disabled') + '>Смотреть</button>' +
                     '</div>' +
                 '</div>';
         });
@@ -2367,7 +2370,7 @@ function playTorrentFile(file, torrent) {
                 'background:#555;' +
                 'cursor:pointer;' +
                 'outline:none;' +
-                'transition:transform 0.15s, box-shadow 0.15s;' +
+                'transition:transform 0.15s, box-shadow 0.15s, background 0.15s, color 0.15s;' +
             '}' +
 
             '.qbit-file__button.selector, .qbit-files__refresh.selector {' +
@@ -2383,13 +2386,24 @@ function playTorrentFile(file, torrent) {
                 'z-index:10;' +
             '}' +
 
+            /* Кнопка "Смотреть" по умолчанию (загрузка не завершена) */
             '.qbit-file__play {' +
-                'background:#2878b9;' +
+                'background:rgba(255,255,255,0.1);' +
+                'color:rgba(255,255,255,0.5);' +
+            '}' +
+
+            /* Кнопка "Смотреть", когда файл готов (белая заливка) */
+            '.qbit-file__play--ready {' +
+                'background:#fff !important;' +
+                'color:#000 !important;' +
+                'font-weight:bold;' +
             '}' +
 
             '.qbit-file__button:disabled {' +
-                'opacity:0.35;' +
+                'opacity:0.5;' +
                 'cursor:default;' +
+                'background:rgba(255,255,255,0.05) !important;' +
+                'color:rgba(255,255,255,0.3) !important;' +
                 'transform:none;' +
                 'outline:none;' +
                 'box-shadow:none;' +
