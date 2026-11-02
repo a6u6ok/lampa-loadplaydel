@@ -1823,29 +1823,29 @@ function registerSettings(){
                 'qbit_url',
                 'input',
                 '',
-                'Адрес сервера',
+                'Адрес сервера qBittorrent',
                 'Пример: '+EXAMPLE_URL
+            ],
+             [
+                'qbit_bypass',
+                'trigger',
+                true,
+                'Обход аутентификации qBittorrent',
+                'Для локальной сети'
             ],
             [
                 'qbit_user',
                 'input',
                 '',
-                'Логин',
+                'Логин qBittorrent',
                 'Логин Web UI'
             ],
             [
                 'qbit_pass',
                 'input',
                 '',
-                'Пароль',
+                'Пароль qBittorrent',
                 'Пароль Web UI'
-            ],
-            [
-                'qbit_bypass',
-                'trigger',
-                true,
-                'Обход аутентификации',
-                'Для локальной сети'
             ],
             [
                 'qbit_savepath',
