@@ -3,7 +3,8 @@
 
 var EXAMPLE_URL='http://192.168.1.1:9080',
     EXAMPLE_SAVEPATH='/mnt/storage/torrents',
-    EXAMPLE_SMB='smb://192.168.1.1/MEDIA/';
+    EXAMPLE_SMB='smb://192.168.1.1/MEDIA/',
+    EXAMPLE_WINDOWS_PATH='\\\\Keenetic\\aboba\\';
 
 var DEBUG=false,
     LOCK_MS=800,
@@ -41,7 +42,8 @@ var TEXT_FIELDS=[
     'qbit_pass',
     'qbit_savepath',
     'qbit_category',
-    'qbit_smb_file'
+    'qbit_smb_file',
+    'qbit_windows_path'
 ];
 
 var SVG_STAR='<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
@@ -119,7 +121,8 @@ function cfg(){
         rename:isTrue(storeGet('qbit_rename',true),true),
         confirm:isTrue(storeGet('qbit_confirm',true),true),
         delFiles:isTrue(storeGet('qbit_delete_files',false),false),
-        smb:String(storeGet('qbit_smb_file','')||'').trim()
+        smb:String(storeGet('qbit_smb_file','')||'').trim(),
+        windowsPath:String(storeGet('qbit_windows_path',EXAMPLE_WINDOWS_PATH)||'').trim()
     };
 }
 
@@ -1105,6 +1108,87 @@ function smbUri(name){
 
 
 /*
+ * Определение Windows-клиента Lampa.
+ * Учитываем Windows user-agent и process.platform в Electron/NW.js.
+ */
+function isWindowsDesktop(){
+    try{
+        if(window.process&&window.process.platform)
+            return window.process.platform==='win32';
+    }catch(e){}
+
+    var platform='';
+    var ua='';
+
+    try{
+        platform=String(navigator.platform||'');
+        ua=String(navigator.userAgent||'');
+    }catch(e){}
+
+    return /win/i.test(platform)||/windows/i.test(ua);
+}
+
+/*
+ * Корень Windows SMB задаётся отдельно от Android SMB URI.
+ * Пример: \\\\Keenetic\\aboba\\
+ * Для удобства также принимается smb://host/share/.
+ */
+function windowsUncRoot(){
+    var root=String(cfg().windowsPath||'').trim();
+
+    if(/^smb:\/\//i.test(root)){
+        var parts=root.replace(/^smb:\/\//i,'')
+            .replace(/\\/g,'/')
+            .split('/')
+            .filter(Boolean);
+
+        if(parts.length<2)return'';
+
+        root='\\\\'+parts.join('\\');
+    }else{
+        root=root.replace(/\//g,'\\');
+    }
+
+    root=root.replace(/\\+$/,'');
+
+    if(!/^\\\\[^\\]+\\[^\\]+/.test(root))
+        return'';
+
+    return root;
+}
+
+/*
+ * Добавляет полный относительный путь из qBittorrent.
+ * Вложенные папки, пробелы и кириллица сохраняются как есть.
+ */
+function windowsFilePath(name){
+    var root=windowsUncRoot();
+
+    if(!root){
+        notify('Укажите Windows UNC-путь, например \\\\\\\\Keenetic\\\\aboba\\\\');
+        return'';
+    }
+
+    var relative=String(name||'')
+        .replace(/\//g,'\\')
+        .replace(/^\\+/,'')
+        .split('\\')
+        .filter(function(part){
+            return part!==''&&part!=='.'&&part!=='..';
+        })
+        .join('\\');
+
+    if(!relative){
+        notify('Не удалось определить относительный путь к видео');
+        return'';
+    }
+
+    return root+'\\'+relative;
+}
+
+
+
+/*
  * Запуск видео через плеер Lampa.
  *
  * AndroidJS.openPlayer — основной способ для Android / Android TV.
@@ -1121,7 +1205,7 @@ function openPlayer(uri,title){
         return;
     }
 
-    var m=/\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
+    var m=/\.([^.\/\\]+)$/.exec(uri);
 
     var data={
         url:uri,
@@ -1131,12 +1215,37 @@ function openPlayer(uri,title){
         exe:m?'.'+m[1].toLowerCase():''
     };
 
+    /*
+     * Windows должен идти через Lampa.Player.play:
+     * этот API использует настройку внешнего плеера и путь к exe,
+     * заданные пользователем в самой Lampa.
+     */
+    if(isWindowsDesktop()){
+        try{
+            if(
+                window.Lampa&&
+                Lampa.Player&&
+                typeof Lampa.Player.play==='function'
+            ){
+                log('Windows: передача UNC-пути штатному плееру Lampa:',uri);
+                return Lampa.Player.play(data);
+            }
+        }catch(e){
+            console.error('[qBittorrent] Windows Lampa.Player:',e);
+            notify('Ошибка передачи файла внешнему плееру Lampa');
+            return;
+        }
+
+        notify('В этой версии Lampa недоступен механизм запуска плеера');
+        return;
+    }
+
     if(
         window.AndroidJS&&
         typeof window.AndroidJS.openPlayer==='function'
     ){
         try{
-            log('Передача видео в плеер Lampa:',uri);
+            log('Передача SMB-видео в плеер Lampa:',uri);
 
             return window.AndroidJS.openPlayer(
                 uri,
@@ -1144,11 +1253,7 @@ function openPlayer(uri,title){
             );
 
         }catch(e){
-            console.error(
-                '[qBittorrent] AndroidJS.openPlayer:',
-                e
-            );
-
+            console.error('[qBittorrent] AndroidJS.openPlayer:',e);
             notify('Ошибка запуска плеера Lampa');
             return;
         }
@@ -1160,15 +1265,11 @@ function openPlayer(uri,title){
             Lampa.Player&&
             typeof Lampa.Player.play==='function'
         ){
-            log('AndroidJS недоступен. Запуск через встроенный плеер Lampa');
-
+            log('AndroidJS недоступен. Запуск через плеер Lampa');
             return Lampa.Player.play(data);
         }
     }catch(e){
-        console.error(
-            '[qBittorrent] Lampa.Player:',
-            e
-        );
+        console.error('[qBittorrent] Lampa.Player:',e);
     }
 
     notify('Не удалось запустить плеер Lampa');
@@ -1186,7 +1287,10 @@ function playFile(file){
     if(!isVideo(file.name))
         return notify('Выбранный файл не является видео');
 
-    var uri=smbUri(file.name);
+    var windows=isWindowsDesktop();
+    var uri=windows
+        ?windowsFilePath(file.name)
+        :smbUri(file.name);
 
     if(!uri)return;
 
@@ -1195,7 +1299,7 @@ function playFile(file){
         file.name,
         'Размер:',
         fmtSize(file.size),
-        'SMB:',
+        windows?'Windows UNC:':'Android SMB:',
         uri
     );
 
@@ -1789,9 +1893,16 @@ function openWizard(){
 
         field(
             'qbit-wz-smb',
-            'SMB-шара',
+            'SMB-шара для Android',
             c.smb,
             EXAMPLE_SMB
+        )+
+
+        field(
+            'qbit-wz-windows',
+            'Windows UNC-путь',
+            c.windowsPath,
+            EXAMPLE_WINDOWS_PATH
         )+
 
         '<div class="qbit-wizard__actions">'+
@@ -1831,13 +1942,15 @@ function openWizard(){
             var url=el.querySelector('#qbit-wz-url').value.trim();
             var path=el.querySelector('#qbit-wz-savepath').value.trim();
             var smb=el.querySelector('#qbit-wz-smb').value.trim();
+            var windowsPath=el.querySelector('#qbit-wz-windows').value.trim();
 
-            if(!url||!path||!smb)
-                return notify('Заполните все три поля');
+            if(!url||!path||!smb||!windowsPath)
+                return notify('Заполните все четыре поля');
 
             storeSet('qbit_url',url);
             storeSet('qbit_savepath',path);
             storeSet('qbit_smb_file',smb);
+            storeSet('qbit_windows_path',windowsPath);
 
             try{
                 Lampa.Modal.close();
@@ -1927,8 +2040,15 @@ function registerSettings(){
                 'qbit_smb_file',
                 'input',
                 '',
-                'Корень SMB-папки загрузок',
+                'Корень SMB-папки загрузок для Android',
                 'Пример: '+EXAMPLE_SMB
+            ],
+            [
+                'qbit_windows_path',
+                'input',
+                EXAMPLE_WINDOWS_PATH,
+                'Windows UNC-путь к папке загрузок',
+                'Пример: '+EXAMPLE_WINDOWS_PATH
             ]
 
         ].forEach(function(it){
@@ -2322,8 +2442,13 @@ function init(){
         );
 
         log(
-            'SMB:',
+            'SMB Android:',
             cfg().smb||'(не задан)'
+        );
+
+        log(
+            'Windows UNC:',
+            cfg().windowsPath||'(не задан)'
         );
 
         log('Автоматическая остановка раздачи: включена');
