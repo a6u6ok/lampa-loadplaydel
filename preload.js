@@ -596,25 +596,27 @@
 
     // Гарантированное центрирование: элемент с фокусом встаёт по центру
     // прокручиваемого списка, а не сдвигается на минимальную дельту.
-    function centerFocus(el, box) {
-        if (!el || !box) return;
-        var row = el.closest ? el.closest('.qbit-file') : null;
-        if (!row) return;
+// Гарантированное центрирование выбранной серии.
+function centerFocus(el, box) {
+    if (!el || !box) return;
 
-        var outer = box.getBoundingClientRect();
-        var inner = row.getBoundingClientRect();
-        if (!inner.height || !outer.height) return;
+    var row = el.closest ? el.closest('.qbit-file') : null;
+    if (!row) return;
 
-        var target = box.scrollTop +
-            (inner.top - outer.top) +
-            (inner.height / 2) -
-            (outer.height / 2);
+    var outer = box.getBoundingClientRect();
+    var inner = row.getBoundingClientRect();
 
-        // Ограничиваем диапазоном скролла, чтобы не дёргать начало и конец списка.
-        var max = box.scrollHeight - outer.height;
-        box.scrollTop = Math.max(0, Math.min(max, target));
-    }
+    if (!inner.height || !outer.height) return;
 
+    var target = box.scrollTop +
+        (inner.top - outer.top) +
+        (inner.height / 2) -
+        (outer.height / 2);
+
+    var max = Math.max(0, box.scrollHeight - box.clientHeight);
+
+    box.scrollTop = Math.max(0, Math.min(max, target));
+}
     function focusFirst(list) {
         setTimeout(function () {
             var sel = '.qbit-file__button.selector:not(:disabled), .qbit-files__refresh.selector';
@@ -725,7 +727,49 @@
                 e.stopPropagation();
                 refreshFiles(hash);
             }).end()
-            .on('focusin hover:focus', '.selector', function () { centerFocus(this, list); });
+            .on('focusin hover:focus', '.selector', function () {
+    centerFocus(this, list);
+});
+
+// Отслеживание перемещения CSS-фокуса контроллером Lampa.
+// Lampa может менять .focus без события focusin.
+var lastFocused = null;
+
+// Отслеживание перемещения фокуса контроллером Lampa.
+var lastFocused = null;
+
+function correctFocusPosition(current) {
+    if (!current || !document.body.contains(current)) return;
+
+    [0, 60, 150, 300].forEach(function (delay) {
+        setTimeout(function () {
+            if (!document.body.contains(current)) return;
+
+            if (current.classList.contains('focus')) {
+                centerFocus(current, list);
+            }
+        }, delay);
+    });
+}
+
+var focusWatcher = setInterval(function () {
+    if (!document.body.contains(list)) {
+        clearInterval(focusWatcher);
+        return;
+    }
+
+    var current = list.querySelector(
+        '.qbit-file__button.focus:not(:disabled), ' +
+        '.qbit-files__refresh.focus'
+    );
+
+    if (!current || current === lastFocused) return;
+
+    lastFocused = current;
+
+    correctFocusPosition(current);
+
+}, 80);
     }
 
     function refreshFiles(hash) {
