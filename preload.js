@@ -3,8 +3,7 @@
 
 var EXAMPLE_URL='http://192.168.1.1:9080',
     EXAMPLE_SAVEPATH='/mnt/storage/torrents',
-    EXAMPLE_SMB='smb://192.168.1.1/aboba/',
-    EXAMPLE_WINDOWS_HTTP='http://192.168.1.1:8091/';
+    EXAMPLE_SMB='smb://192.168.1.1/MEDIA/';
 
 var DEBUG=false,
     LOCK_MS=800,
@@ -42,10 +41,7 @@ var TEXT_FIELDS=[
     'qbit_pass',
     'qbit_savepath',
     'qbit_category',
-    'qbit_smb_file',
-    'qbit_smb_user',
-    'qbit_smb_pass',
-    'qbit_windows_http'
+    'qbit_smb_file'
 ];
 
 var SVG_STAR='<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
@@ -123,10 +119,7 @@ function cfg(){
         rename:isTrue(storeGet('qbit_rename',true),true),
         confirm:isTrue(storeGet('qbit_confirm',true),true),
         delFiles:isTrue(storeGet('qbit_delete_files',false),false),
-        smb:String(storeGet('qbit_smb_file','')||'').trim(),
-        smbUser:String(storeGet('qbit_smb_user','a6u6ok')||'a6u6ok'),
-        smbPass:String(storeGet('qbit_smb_pass','')||''),
-        windowsHttp:String(storeGet('qbit_windows_http',EXAMPLE_WINDOWS_HTTP)||'').trim()
+        smb:String(storeGet('qbit_smb_file','')||'').trim()
     };
 }
 
@@ -1096,8 +1089,7 @@ function startAutoStopMonitor(){
 
 
 function smbUri(name){
-    var c=cfg();
-    var root=String(c.smb||'')
+    var root=cfg().smb
         .replace(/\\/g,'/')
         .replace(/\/+$/,'');
 
@@ -1106,55 +1098,9 @@ function smbUri(name){
         return'';
     }
 
-    /*
-     * SMB credentials are embedded in the URI user-info section.
-     * The username and password are URI-encoded separately so that
-     * @, :, spaces and other reserved characters do not corrupt the URL.
-     */
-    if(c.smbUser){
-        var m=/^smb:\/\/([^/]+)(\/.*)?$/i.exec(root);
-
-        if(m){
-            var authority=m[1].replace(/^[^@]*@/,'');
-            var auth=encodeURIComponent(c.smbUser);
-
-            if(c.smbPass)
-                auth+=':'+encodeURIComponent(c.smbPass);
-
-            root='smb://'+auth+'@'+authority+(m[2]||'');
-        }
-    }
-
     var file=cleanPath(name).replace(/^\/+/,'');
+
     return root+(file?'/'+smbEncode(file):'');
-}
-
-
-/*
- * Windows Lampa Desktop does not accept UNC or smb:// command-line
- * arguments for external players. It accepts HTTP(S) media URLs.
- * A read-only HTTP server on Keenetic must expose the same directory
- * that is available as \\Keenetic\\aboba\\ in Windows.
- */
-function windowsHttpUrl(name){
-    var root=String(cfg().windowsHttp||'').trim().replace(/\/+$/,'');
-
-    if(!/^https?:\/\/[^/]+(?:\/.*)?$/i.test(root)){
-        notify('Укажите HTTP-корень файлов на Keenetic, например '+EXAMPLE_WINDOWS_HTTP);
-        return'';
-    }
-
-    var file=cleanPath(name).replace(/^\/+/,'');
-    if(!file){
-        notify('Не удалось определить относительный путь к видео');
-        return'';
-    }
-
-    return root+'/'+smbEncode(file);
-}
-
-function safeUriForLog(uri){
-    return String(uri||'').replace(/^(smb:\/\/)[^/]*@/i,'$1***@');
 }
 
 
@@ -1175,7 +1121,7 @@ function openPlayer(uri,title){
         return;
     }
 
-    var m=/\.([^.\/\\]+)$/.exec(uri);
+    var m=/\.([^.\/?#]+)(?:[?#]|$)/i.exec(uri);
 
     var data={
         url:uri,
@@ -1185,37 +1131,12 @@ function openPlayer(uri,title){
         exe:m?'.'+m[1].toLowerCase():''
     };
 
-    /*
-     * Windows должен идти через Lampa.Player.play:
-     * этот API использует настройку внешнего плеера и путь к exe,
-     * заданные пользователем в самой Lampa.
-     */
-    if(isWindowsDesktop()){
-        try{
-            if(
-                window.Lampa&&
-                Lampa.Player&&
-                typeof Lampa.Player.play==='function'
-            ){
-                log('Windows: передача HTTP-ссылки штатному плееру Lampa:',safeUriForLog(uri));
-                return Lampa.Player.play(data);
-            }
-        }catch(e){
-            console.error('[qBittorrent] Windows Lampa.Player:',e);
-            notify('Ошибка передачи файла внешнему плееру Lampa');
-            return;
-        }
-
-        notify('В этой версии Lampa недоступен механизм запуска плеера');
-        return;
-    }
-
     if(
         window.AndroidJS&&
         typeof window.AndroidJS.openPlayer==='function'
     ){
         try{
-            log('Передача SMB-видео в плеер Lampa:',safeUriForLog(uri));
+            log('Передача видео в плеер Lampa:',uri);
 
             return window.AndroidJS.openPlayer(
                 uri,
@@ -1223,7 +1144,11 @@ function openPlayer(uri,title){
             );
 
         }catch(e){
-            console.error('[qBittorrent] AndroidJS.openPlayer:',e);
+            console.error(
+                '[qBittorrent] AndroidJS.openPlayer:',
+                e
+            );
+
             notify('Ошибка запуска плеера Lampa');
             return;
         }
@@ -1235,11 +1160,15 @@ function openPlayer(uri,title){
             Lampa.Player&&
             typeof Lampa.Player.play==='function'
         ){
-            log('AndroidJS недоступен. Запуск через плеер Lampa');
+            log('AndroidJS недоступен. Запуск через встроенный плеер Lampa');
+
             return Lampa.Player.play(data);
         }
     }catch(e){
-        console.error('[qBittorrent] Lampa.Player:',e);
+        console.error(
+            '[qBittorrent] Lampa.Player:',
+            e
+        );
     }
 
     notify('Не удалось запустить плеер Lampa');
@@ -1257,10 +1186,7 @@ function playFile(file){
     if(!isVideo(file.name))
         return notify('Выбранный файл не является видео');
 
-    var windows=isWindowsDesktop();
-    var uri=windows
-        ?windowsHttpUrl(file.name)
-        :smbUri(file.name);
+    var uri=smbUri(file.name);
 
     if(!uri)return;
 
@@ -1269,8 +1195,8 @@ function playFile(file){
         file.name,
         'Размер:',
         fmtSize(file.size),
-        windows?'Windows HTTP:':'Android SMB:',
-        safeUriForLog(uri)
+        'SMB:',
+        uri
     );
 
     openPlayer(uri,basename(file.name));
@@ -1828,11 +1754,11 @@ function openWizard(){
 
     var c=cfg();
 
-    function field(id,label,value,example,inputType){
+    function field(id,label,value,example){
         return(
             '<div class="qbit-wizard__field">'+
                 '<label>'+label+'</label>'+
-                '<input type="'+(inputType||'text')+'" id="'+id+'" value="'+esc(value)+'" autocomplete="off">'+
+                '<input type="text" id="'+id+'" value="'+esc(value)+'">'+
                 '<div class="qbit-wizard__hint">Пример: '+esc(example)+'</div>'+
             '</div>'
         );
@@ -1863,31 +1789,9 @@ function openWizard(){
 
         field(
             'qbit-wz-smb',
-            'SMB-шара для Android',
+            'SMB-шара',
             c.smb,
             EXAMPLE_SMB
-        )+
-
-        field(
-            'qbit-wz-smb-user',
-            'Логин SMB на Keenetic',
-            c.smbUser,
-            'a6u6ok'
-        )+
-
-        field(
-            'qbit-wz-smb-pass',
-            'Пароль SMB на Keenetic',
-            c.smbPass,
-            'Пароль пользователя SMB',
-            'password'
-        )+
-
-        field(
-            'qbit-wz-windows-http',
-            'HTTP-корень файлов для Windows',
-            c.windowsHttp,
-            EXAMPLE_WINDOWS_HTTP
         )+
 
         '<div class="qbit-wizard__actions">'+
@@ -1927,22 +1831,13 @@ function openWizard(){
             var url=el.querySelector('#qbit-wz-url').value.trim();
             var path=el.querySelector('#qbit-wz-savepath').value.trim();
             var smb=el.querySelector('#qbit-wz-smb').value.trim();
-            var smbUser=el.querySelector('#qbit-wz-smb-user').value.trim();
-            var smbPass=el.querySelector('#qbit-wz-smb-pass').value;
-            var windowsHttp=el.querySelector('#qbit-wz-windows-http').value.trim();
 
             if(!url||!path||!smb)
-                return notify('Заполните адрес сервера, путь загрузки и SMB-шару');
-
-            if(windowsHttp&&!/^https?:\/\//i.test(windowsHttp))
-                return notify('HTTP-корень должен начинаться с http:// или https://');
+                return notify('Заполните все три поля');
 
             storeSet('qbit_url',url);
             storeSet('qbit_savepath',path);
             storeSet('qbit_smb_file',smb);
-            storeSet('qbit_smb_user',smbUser);
-            storeSet('qbit_smb_pass',smbPass);
-            storeSet('qbit_windows_http',windowsHttp);
 
             try{
                 Lampa.Modal.close();
@@ -2032,29 +1927,8 @@ function registerSettings(){
                 'qbit_smb_file',
                 'input',
                 '',
-                'Корень SMB-папки загрузок для Android',
+                'Корень SMB-папки загрузок',
                 'Пример: '+EXAMPLE_SMB
-            ],
-            [
-                'qbit_smb_user',
-                'input',
-                'a6u6ok',
-                'Логин SMB на Keenetic',
-                'Например: a6u6ok'
-            ],
-            [
-                'qbit_smb_pass',
-                'input',
-                '',
-                'Пароль SMB на Keenetic',
-                'Пароль пользователя с доступом к SSD'
-            ],
-            [
-                'qbit_windows_http',
-                'input',
-                EXAMPLE_WINDOWS_HTTP,
-                'HTTP-корень файлов для Windows',
-                'Пример: '+EXAMPLE_WINDOWS_HTTP
             ]
 
         ].forEach(function(it){
@@ -2448,13 +2322,8 @@ function init(){
         );
 
         log(
-            'SMB Android:',
+            'SMB:',
             cfg().smb||'(не задан)'
-        );
-
-        log(
-            'Windows HTTP:',
-            cfg().windowsHttp||'(не задан)'
         );
 
         log('Автоматическая остановка раздачи: включена');
@@ -2466,7 +2335,7 @@ function init(){
         );
 
         log(
-            'Windows: HTTP URL для внешнего плеера. Android: SMB с авторизацией. contentLayout: NoSubfolder.'
+            'contentLayout: NoSubfolder. index из torrents/files. Центрирование выбранного файла включено.'
         );
 
         log('Плагин загружен');
