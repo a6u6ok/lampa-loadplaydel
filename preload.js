@@ -4,7 +4,7 @@
 var EXAMPLE_URL='http://192.168.1.1:9080',
     EXAMPLE_SAVEPATH='/mnt/storage/torrents',
     EXAMPLE_SMB='smb://192.168.1.1/MEDIA/',
-    EXAMPLE_WINDOWS_PATH='\\\\Keenetic\\aboba\\';
+    EXAMPLE_WINDOWS_PATH='\\\\Router\\media\\';
 
 var DEBUG=false,
     LOCK_MS=800,
