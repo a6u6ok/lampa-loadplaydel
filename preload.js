@@ -1,7 +1,7 @@
 // ============================================================================
 // qBittorrent для Lampa — Keenetic + Entware + SMB
 // Управление отдельными файлами внутри торрента
-// Фокус кнопок — зелёный фон, центрирование списка сохранено
+// Фокус кнопок — зелёный фон (по классу .focus от Lampa), центрирование сохранено
 // ============================================================================
 
 (function () {
@@ -1079,8 +1079,8 @@
             '.qbit-direct-host{position:relative;margin-right:32px!important}' +
             '.qbit-direct-actions{display:flex;flex-direction:column;justify-content:center;align-items:center;position:absolute;right:-28px;top:0;bottom:0;z-index:999;gap:6px}' +
             '.qbit-direct-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;width:24px;height:24px;background:none!important;border:none!important;border-radius:0!important;padding:0;cursor:pointer;box-sizing:border-box;transition:transform .2s}' +
-            // Фокус карточных кнопок: подсветка зелёным, без рамки
-            '.qbit-direct-btn:focus,.qbit-direct-btn.focus{transform:scale(1.25);outline:none!important;box-shadow:none!important;background:rgba(39,174,96,.35)!important;border-radius:4px;z-index:1000}' +
+            // Фокус карточных кнопок: зелёная подложка только по классу .focus
+            '.qbit-direct-btn.focus{transform:scale(1.25);outline:none!important;box-shadow:none!important;background:rgba(39,174,96,.35)!important;border-radius:4px;z-index:1000}' +
             '.qbit-direct-btn svg{width:20px;height:20px;fill:#27ae60}' +
             '.qbit-btn-text{font-size:8px;font-weight:bold;margin-top:-2px;line-height:1;color:#27ae60}' +
             '.qbit-direct-player svg{fill:#3498db}' +
@@ -1101,20 +1101,22 @@
             '.qbit-file__progress{height:4px;background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;margin-top:7px}' +
             '.qbit-file__progress div{height:100%;background:#27ae60;transition:width .3s}' +
             '.qbit-file__actions{display:flex;flex-wrap:wrap;gap:7px}' +
-            '.qbit-file__button,.qbit-files__refresh{border:0;border-radius:5px;padding:8px 12px;font-size:12px;color:#fff;background:#555;cursor:pointer;transition:transform .15s,background .15s,color .15s}' +
+            // Базовый вид кнопок: блекло-белый (загруженные) и приглушённый (недогруженные)
+            '.qbit-file__button,.qbit-files__refresh{border:0;border-radius:5px;padding:8px 12px;font-size:12px;cursor:pointer;transition:transform .15s,background .15s,color .15s;outline:none!important;box-shadow:none!important}' +
             '.qbit-file__button.selector,.qbit-files__refresh.selector{position:relative;z-index:1}' +
-            // Фокус кнопок списка: зелёный фон, без белой рамки
-            '.qbit-file__button:focus,.qbit-files__refresh:focus,' +
+            // Загруженная (готовая) кнопка без фокуса — блекло-белая
+            '.qbit-file__play--ready{background:rgba(255,255,255,.75)!important;color:rgba(0,0,0,.8)!important;font-weight:bold}' +
+            // Недогруженная кнопка без фокуса — тусклая
+            '.qbit-file__button:not(.qbit-file__play--ready){background:rgba(255,255,255,.08)!important;color:rgba(255,255,255,.35)!important}' +
+            '.qbit-file__button:disabled{opacity:.5;cursor:default}' +
+            // Фокус (класс .focus от Lampa) — зелёный фон, белая рамки нет.
+            // Селектор :focus намеренно НЕ используется: реальный DOM-фокус
+            // может оставаться на первой кнопке, пока Lampa двигает .focus.
             '.qbit-file__button.focus,.qbit-files__refresh.focus{' +
                 'transform:scale(1.05);outline:none!important;box-shadow:none!important;' +
                 'background:#27ae60!important;color:#fff!important;z-index:10}' +
-            // Белая «готовая» кнопка при фокусе — тёмно-зелёная, чтобы выделение было видно
-            '.qbit-file__play--ready:focus,.qbit-file__play--ready.focus{background:#1e8449!important;color:#fff!important}' +
-            '.qbit-file__play{background:rgba(255,255,255,.1);color:rgba(255,255,255,.5)}' +
-            '.qbit-file__play--ready{background:#fff!important;color:#000!important;font-weight:bold}' +
-            '.qbit-file__button:disabled{opacity:.5;cursor:default;background:rgba(255,255,255,.05)!important;color:rgba(255,255,255,.3)!important;transform:none;box-shadow:none}' +
             '.qbit-files__footer{padding-top:12px;border-top:1px solid rgba(128,128,128,.25)}' +
-            '.qbit-files__refresh{background:#555;width:100%;padding:10px}' +
+            '.qbit-files__refresh{background:rgba(255,255,255,.15)!important;color:#fff!important;width:100%;padding:10px}' +
             '.qbit-wizard{padding:20px}' +
             '.qbit-wizard__desc{font-size:14px;margin-bottom:14px}' +
             '.qbit-wizard__field{margin-bottom:12px}' +
@@ -1122,11 +1124,11 @@
             '.qbit-wizard__field input{width:100%;padding:8px 10px;font-size:14px;box-sizing:border-box;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:inherit}' +
             '.qbit-wizard__hint{font-size:11px;margin-top:4px;opacity:.5}' +
             '.qbit-wizard__actions{display:flex;gap:10px;margin-top:16px}' +
-            '.qbit-wizard__btn{padding:10px 18px;font-size:14px;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.1);color:inherit;cursor:pointer}' +
-            // Фокус кнопок мастера: зелёный фон, без рамки
-            '.qbit-wizard__btn:focus,.qbit-wizard__btn.selector.focus{outline:none!important;box-shadow:none!important;background:#27ae60!important;color:#fff!important}' +
+            '.qbit-wizard__btn{padding:10px 18px;font-size:14px;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.1);color:inherit;cursor:pointer;outline:none!important;box-shadow:none!important}' +
+            // Фокус кнопок мастера: зелёный фон по классу .focus
+            '.qbit-wizard__btn.focus{outline:none!important;box-shadow:none!important;background:#27ae60!important;color:#fff!important}' +
             '.qbit-wizard__save{background:#27ae60;border-color:#27ae60;color:#fff}' +
-            '.qbit-wizard__save:focus,.qbit-wizard__save.selector.focus{background:#1e8449!important}';
+            '.qbit-wizard__save.focus{background:#1e8449!important}';
 
         document.head.appendChild(s);
     }
