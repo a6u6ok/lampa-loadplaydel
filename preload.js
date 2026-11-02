@@ -25,6 +25,9 @@ var reqId=0,
     autoStopChecking=false,
     autoStopping={};
 
+/* Защита от параллельного повторного добавления одного magnet. */
+var addingMagnets={};
+
 var CT={'Content-Type':'application/x-www-form-urlencoded'};
 
 var VIDEO=[
@@ -108,22 +111,14 @@ function isTrue(v,d){
 function cfg(){
     return{
         url:String(storeGet('qbit_url','')||'').trim(),
-
         user:String(storeGet('qbit_user','')||''),
         pass:String(storeGet('qbit_pass','')||''),
-
         bypass:isTrue(storeGet('qbit_bypass',true),true),
-
         savepath:String(storeGet('qbit_savepath','')||'').trim(),
-
         category:String(storeGet('qbit_category','')||'').trim(),
-
         rename:isTrue(storeGet('qbit_rename',true),true),
-
         confirm:isTrue(storeGet('qbit_confirm',true),true),
-
         delFiles:isTrue(storeGet('qbit_delete_files',false),false),
-
         smb:String(storeGet('qbit_smb_file','')||'').trim()
     };
 }
@@ -253,16 +248,85 @@ function cmpFiles(a,b){
 }
 
 
+/*
+ * Преобразование Base32 BTIH в 40-символьный hex.
+ * qBittorrent API возвращает infohash в hex-формате.
+ */
+function base32ToHex(value){
+    value=String(value||'').toUpperCase();
+
+    if(!/^[A-Z2-7]{32}$/.test(value))
+        return'';
+
+    var alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',
+        bits=0,
+        buffer=0,
+        bytes=[];
+
+    for(var i=0;i<value.length;i++){
+        var n=alphabet.indexOf(value.charAt(i));
+
+        if(n<0)return'';
+
+        buffer=(buffer<<5)|n;
+        bits+=5;
+
+        if(bits>=8){
+            bits-=8;
+            bytes.push((buffer>>bits)&255);
+        }
+    }
+
+    if(bytes.length!==20)return'';
+
+    return bytes.map(function(b){
+        return('0'+b.toString(16)).slice(-2);
+    }).join('');
+}
+
+
+/*
+ * Извлекает только реальный infohash из magnet или готового хеша.
+ * При hybrid magnet сначала используется BTIH v1.
+ */
 function magnetHash(v){
     v=String(v||'').trim();
 
-    var m=/urn:btih:([a-zA-Z0-9]+)/i.exec(v);
+    if(!v)return'';
 
-    if(m)return m[1].toLowerCase();
+    var decoded=v;
 
-    return/^[a-f0-9]{40}$|^[a-f0-9]{64}$/i.test(v)
-        ?v.toLowerCase()
-        :'';
+    try{
+        decoded=decodeURIComponent(v);
+    }catch(e){}
+
+    var m=/urn:btih:([a-zA-Z0-9]+)/i.exec(decoded);
+
+    if(m){
+        var btih=m[1];
+
+        if(/^[a-f0-9]{40}$/i.test(btih))
+            return btih.toLowerCase();
+
+        if(/^[a-z2-7]{32}$/i.test(btih))
+            return base32ToHex(btih);
+
+        return'';
+    }
+
+    /*
+     * Поддержка v2 infohash в виде 64 hex.
+     * Для magnet v2 с префиксом 1220 берётся сам SHA-256.
+     */
+    m=/urn:btmh:1220([a-f0-9]{64})/i.exec(decoded);
+
+    if(m)
+        return m[1].toLowerCase();
+
+    if(/^[a-f0-9]{40}$/i.test(v)||/^[a-f0-9]{64}$/i.test(v))
+        return v.toLowerCase();
+
+    return'';
 }
 
 function extractMagnet(d){
@@ -293,6 +357,13 @@ function extractMagnet(d){
     return'';
 }
 
+
+/*
+ * ВАЖНО:
+ * Обычное поле data.hash больше не принимается.
+ * Оно может содержать внутренний идентификатор Lampa,
+ * который не совпадает с infohash qBittorrent.
+ */
 function extractHash(d,depth){
     depth=depth||0;
 
@@ -300,13 +371,13 @@ function extractHash(d,depth){
         return'';
 
     var f=[
-        'hash',
-        'Hash',
         'infohash',
         'infoHash',
         'InfoHash',
         'infohash_v1',
         'infoHashV1',
+        'infohash_v2',
+        'infoHashV2',
         'btih'
     ];
 
@@ -319,8 +390,10 @@ function extractHash(d,depth){
 
     var magnet=extractMagnet(d);
 
-    if(magnet&&magnetHash(magnet))
-        return magnetHash(magnet);
+    if(magnet){
+        var mh=magnetHash(magnet);
+        if(mh)return mh;
+    }
 
     var nested=[
         'torrent',
@@ -599,33 +672,83 @@ function addBody(magnet,title){
     return p.join('&');
 }
 
+
+/*
+ * Получение torrent-объекта по точному infohash.
+ * Сначала используется фильтр API, затем резервная проверка полного списка.
+ */
+function torrentInfo(hash,cb){
+    var target=String(hash||'').trim().toLowerCase();
+
+    if(!target)return cb&&cb(null);
+
+    function match(t){
+        if(!t)return false;
+
+        return[
+            t.hash,
+            t.infohash_v1,
+            t.infohash_v2
+        ].some(function(v){
+            return String(v||'').trim().toLowerCase()===target;
+        });
+    }
+
+    qbGet(
+        '/api/v2/torrents/info?hashes='+encodeURIComponent(target),
+        function(resp){
+            var list=parseTorrents(resp);
+
+            if(list&&list.length){
+                var exact=list.filter(match)[0];
+
+                if(exact)
+                    return cb(exact);
+            }
+
+            qbGet('/api/v2/torrents/info',function(all){
+                var found=(parseTorrents(all)||[])
+                    .filter(match)[0]||null;
+
+                if(!found)
+                    log('Торрент не найден по хешу:',target);
+
+                cb(found);
+            });
+        }
+    );
+}
+
 function torrentProgress(hash,cb){
     if(!hash)return cb(null);
 
-    qbGet(
-        '/api/v2/torrents/info?hashes='+encodeURIComponent(hash),
-        function(resp){
-            var t=parseTorrents(resp);
+    torrentInfo(hash,function(t){
+        if(!t)
+            return cb(null);
 
-            cb(t&&t.length
-                ?Number(t[0].progress)||0
-                :null
-            );
-        }
-    );
+        /*
+         * В состоянии metaDL прогресс закономерно равен нулю.
+         * Это не ошибка поиска — торрент существует, и polling продолжается.
+         */
+        var p=Number(t.progress);
+
+        if(!isFinite(p))p=0;
+
+        cb(Math.max(0,Math.min(1,p)));
+    });
 }
 
 function verifyAdded(hash,attempt,cb){
     attempt=attempt||0;
 
-    if(!hash)return cb(false);
+    if(!hash)return cb(null);
 
-    torrentProgress(hash,function(p){
-        if(p!==null)
-            return cb(true);
+    torrentInfo(hash,function(t){
+        if(t)
+            return cb(t);
 
         if(attempt+1>=VERIFY_N)
-            return cb(false);
+            return cb(null);
 
         setTimeout(function(){
             verifyAdded(hash,attempt+1,cb);
@@ -633,46 +756,127 @@ function verifyAdded(hash,attempt,cb){
     });
 }
 
+
+/*
+ * Добавление торрента:
+ * 1. Проверяем, есть ли он уже в qBittorrent.
+ * 2. Если есть — возвращаем существующую запись без повторного POST.
+ * 3. Если нет — блокируем повторный запрос и отправляем magnet.
+ * 4. После отправки ждём реального появления записи в API.
+ */
 function qbAdd(magnet,title,cb){
+    cb=typeof cb==='function'?cb:function(){};
+
     if(!magnet||!/^magnet:\?/i.test(magnet)){
         notify('Не удалось получить magnet-ссылку');
-        return cb&&cb(false);
+        return cb(false,null);
     }
 
-    debugNotify('Отправляю в qBittorrent...');
+    var hash=magnetHash(magnet);
 
-    qbPost(
-        '/api/v2/torrents/add',
-        addBody(magnet,title),
-        function(resp){
+    if(!hash){
+        notify('Не удалось определить infohash magnet-ссылки');
+        return cb(false,null);
+    }
 
-            if(resp==null){
-                notify('Нет связи с qBittorrent');
-                return cb&&cb(false);
+    var key=hash.toLowerCase();
+
+    /*
+     * Если добавление этого же magnet уже выполняется,
+     * второй запрос не отправляется. Callback присоединяется к первому.
+     */
+    if(addingMagnets[key]){
+        log('Повторный запрос заблокирован, добавление уже выполняется:',key);
+        addingMagnets[key].push(cb);
+        notify('Этот торрент уже добавляется');
+        return;
+    }
+
+    addingMagnets[key]=[cb];
+
+    function finish(ok,torrent,message){
+        var callbacks=addingMagnets[key]||[];
+
+        delete addingMagnets[key];
+
+        if(message)
+            notify(message);
+
+        callbacks.forEach(function(fn){
+            try{
+                fn(!!ok,torrent||null);
+            }catch(e){
+                console.error('[qBittorrent] callback добавления:',e);
             }
+        });
+    }
 
-            if(/Forbidden|403|Errored/i.test(resp)){
-                notify('Ошибка добавления: '+resp);
-                return cb&&cb(false);
-            }
+    debugNotify('Проверяю наличие торрента...');
 
-            if(!cfg().confirm){
-                notify('Отправлено в qBittorrent');
-                return cb&&cb(true);
-            }
+    torrentInfo(hash,function(existing){
+        if(existing){
+            log('Торрент уже существует. Повторное добавление отменено:',existing.name,key);
 
-            verifyAdded(magnetHash(magnet),0,function(found){
-                notify(
-                    found
-                        ?'Торрент успешно добавлен'
-                        :'Запрос отправлен. Проверьте список торрентов.'
-                );
-
-                cb&&cb(true,found);
-            });
+            return finish(
+                true,
+                existing,
+                'Торрент уже есть в qBittorrent. Подключено отслеживание.'
+            );
         }
-    );
+
+        debugNotify('Отправляю в qBittorrent...');
+
+        qbPost(
+            '/api/v2/torrents/add',
+            addBody(magnet,title),
+            function(resp){
+
+                if(resp==null){
+                    return finish(
+                        false,
+                        null,
+                        'Нет связи с qBittorrent'
+                    );
+                }
+
+                if(/Forbidden|403|Errored|Fails/i.test(String(resp))){
+                    return finish(
+                        false,
+                        null,
+                        'Ошибка добавления: '+resp
+                    );
+                }
+
+                verifyAdded(hash,0,function(found){
+                    if(!found){
+                        return finish(
+                            false,
+                            null,
+                            'qBittorrent не подтвердил добавление торрента. Проверьте список загрузок.'
+                        );
+                    }
+
+                    log(
+                        'Добавление подтверждено:',
+                        found.name,
+                        found.hash,
+                        'progress:',
+                        found.progress,
+                        'state:',
+                        found.state
+                    );
+
+                    finish(
+                        true,
+                        found,
+                        'Торрент успешно найден в qBittorrent'
+                    );
+                });
+            }
+        );
+    });
 }
+
 
 function qbDelete(hashOrMagnet,cb){
     var hash=magnetHash(hashOrMagnet);
@@ -712,9 +916,7 @@ function qbDelete(hashOrMagnet,cb){
         cb&&cb(true);
     });
 }
-
-
-function getManagedHashes(){
+    function getManagedHashes(){
     var h=storeGet(AUTO_STOP_KEY,[]);
 
     if(typeof h==='string'){
@@ -999,45 +1201,7 @@ function playFile(file){
 
     openPlayer(uri,basename(file.name));
 }
- function torrentInfo(hash,cb){
-    var target=String(hash||'').trim().toLowerCase();
 
-    if(!target)return cb&&cb(null);
-
-    function match(t){
-        return!!t&&[
-            t.hash,
-            t.infohash_v1,
-            t.infohash_v2
-        ].some(function(v){
-            return String(v||'').trim().toLowerCase()===target;
-        });
-    }
-
-    qbGet(
-        '/api/v2/torrents/info?hashes='+encodeURIComponent(target),
-        function(resp){
-            var list=parseTorrents(resp);
-
-            if(list&&list.length){
-                var exact=list.filter(match)[0];
-
-                if(exact)
-                    return cb(exact);
-            }
-
-            qbGet('/api/v2/torrents/info',function(all){
-                var found=(parseTorrents(all)||[])
-                    .filter(match)[0]||null;
-
-                if(!found)
-                    log('Торрент не найден по хешу:',target);
-
-                cb(found);
-            });
-        }
-    );
-}
 
 function torrentFiles(hash,attempt,cb){
     attempt=attempt||0;
@@ -1383,9 +1547,7 @@ function renderFiles(hash,torrent,files){
         correctFocusPosition(current);
     },80);
 }
-
-
-function refreshFiles(hash){
+    function refreshFiles(hash){
     var req=++modalReq;
 
     torrentInfo(hash,function(t){
@@ -1886,6 +2048,12 @@ function makeBtn(cls,text,handler,icon){
 }
 
 
+/*
+ * Обработчик карточки торрента.
+ *
+ * Хеш берётся из magnet либо из явно названных infohash-полей.
+ * Обычное поле hash от Lampa не используется.
+ */
 function initTorrentButton(){
     if(!window.Lampa||!Lampa.Listener)
         return console.error('[qBittorrent] Listener unavailable');
@@ -1915,10 +2083,14 @@ function initTorrentButton(){
                 extractMagnet(data)||
                 extractMagnet(event);
 
+            /*
+             * Приоритет — magnet infohash.
+             * Если magnet отсутствует, допускаются только явные infohash-поля.
+             */
             var hash=
+                magnetHash(magnet)||
                 extractHash(data)||
-                extractHash(event)||
-                magnetHash(magnet);
+                extractHash(event);
 
             var title=
                 data.Title||
@@ -1941,29 +2113,50 @@ function initTorrentButton(){
                     if(!magnet)
                         return notify('Не найдена magnet-ссылка');
 
+                    var currentHash=magnetHash(magnet);
+
+                    if(!currentHash)
+                        return notify('Не удалось определить infohash magnet-ссылки');
+
                     addBtn.dataset.qbitAdding='1';
 
                     setProgress(addBtn,0,SVG_DOWN);
 
-                    qbAdd(magnet,title,function(ok){
+                    qbAdd(magnet,title,function(ok,torrent){
                         addBtn.dataset.qbitAdding='0';
 
-                        if(!ok){
+                        if(!ok||!torrent){
                             stopPoll(addBtn);
                             return setProgress(addBtn,null,SVG_DOWN);
                         }
 
-                        hash=hash||magnetHash(magnet);
+                        /*
+                         * Используем hash, реально возвращённый qBittorrent.
+                         * Это исключает отслеживание постороннего ID Lampa.
+                         */
+                        hash=String(torrent.hash||currentHash)
+                            .trim()
+                            .toLowerCase();
 
                         if(!hash){
-                            notify('Торрент добавлен, но хеш не определён');
-
+                            notify('Торрент найден, но qBittorrent не вернул его хеш');
                             return setProgress(addBtn,null,SVG_DOWN);
                         }
 
                         rememberManagedTorrent(hash);
 
-                        startPoll(addBtn,hash,item,SVG_DOWN);
+                        var p=Number(torrent.progress);
+
+                        if(!isFinite(p))p=0;
+
+                        setProgress(addBtn,p,SVG_DOWN);
+
+                        if(p>=1){
+                            stopPoll(addBtn);
+                            setProgress(addBtn,1,SVG_DOWN);
+                        }else{
+                            startPoll(addBtn,hash,item,SVG_DOWN);
+                        }
                     });
                 },
                 SVG_DOWN
