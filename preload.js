@@ -1707,11 +1707,12 @@ function renderFiles(hash,torrent,files){
     focusFirst(list);
 
     /*
-     * Lampa может отправить hover:enter и click на одно нажатие.
-     * Блокировка живёт всё время существования этого окна и не даёт
-     * повторно запустить тот же файл после возврата из внешнего плеера.
+     * Защита от двойного события hover:enter + click.
+     * Само окно списка не закрываем: после выхода из плеера
+     * пользователь возвращается к этому же списку серий.
      */
-    var playStarted = false;
+    var lastPlayAt = 0;
+    var lastPlayId = '';
 
     window.jQuery(el)
         .find('[data-action="play"]')
@@ -1722,42 +1723,28 @@ function renderFiles(hash,torrent,files){
                 if(e.stopImmediatePropagation)e.stopImmediatePropagation();
             }
 
-            if(playStarted)return;
+            var fileId = this.getAttribute('data-id') || '';
+            var now = Date.now();
 
-            var f=findFile(
-                files,
-                this.getAttribute('data-id')
-            );
+            /* Одно нажатие Lampa иногда передаёт двумя событиями. */
+            if(fileId === lastPlayId && now - lastPlayAt < 1200)
+                return;
+
+            lastPlayAt = now;
+            lastPlayId = fileId;
+
+            var f=findFile(files,fileId);
 
             if(!f){
                 notify('Файл не найден в полученном списке qBittorrent');
 
                 return log(
                     'Не найден файл. Индекс:',
-                    this.getAttribute('data-id')
+                    fileId
                 );
             }
 
-            if(Number(f.progress)<0.999999||!isVideo(f.name)){
-                playFile(f, torrent);
-                return;
-            }
-
-            /* Сначала закрываем модальное окно, затем запускаем плеер. */
-            playStarted = true;
-            this.disabled = true;
-            modalHash = '';
-            modalReq++;
-
-            try{
-                Lampa.Modal.close();
-            }catch(closeError){
-                log('Не удалось закрыть окно списка перед запуском:',closeError);
-            }
-
-            setTimeout(function(){
-                playFile(f, torrent);
-            },120);
+            playFile(f, torrent);
         })
         .end()
         .find('.qbit-files__refresh')
@@ -2011,7 +1998,6 @@ function openWizard(){
         return notify('Не удалось открыть настройки: jQuery недоступен');
 
     var c=cfg();
-
     function field(id,label,value,example,type){
         return(
             '<div class="qbit-wizard__field">'+
