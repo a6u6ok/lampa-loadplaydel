@@ -674,7 +674,20 @@ function addBody(magnet, title) {
         'sequentialDownload=false'
     ];
 
-    if (title) p.push('rename=' + encodeURIComponent(title));
+    /*
+     * Если включено создание отдельной папки торрента,
+     * заменяем пробелы в её названии на подчёркивания.
+     * Например: "Мой любимый фильм" -> "Мой_любимый_фильм".
+     */
+    if (title) {
+        var folderTitle = String(title).trim();
+
+        if (c.createFolder) {
+            folderTitle = folderTitle.replace(/\s+/g, '_');
+        }
+
+        p.push('rename=' + encodeURIComponent(folderTitle));
+    }
 
     return p.join('&');
 }
