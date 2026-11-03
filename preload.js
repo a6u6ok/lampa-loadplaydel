@@ -1706,11 +1706,23 @@ function renderFiles(hash,torrent,files){
     var list=el.querySelector('.qbit-files');
     focusFirst(list);
 
+    /*
+     * Lampa может отправить hover:enter и click на одно нажатие.
+     * Блокировка живёт всё время существования этого окна и не даёт
+     * повторно запустить тот же файл после возврата из внешнего плеера.
+     */
+    var playStarted = false;
+
     window.jQuery(el)
         .find('[data-action="play"]')
         .on('hover:enter click',function(e){
-            e.preventDefault();
-            e.stopPropagation();
+            if(e){
+                e.preventDefault();
+                e.stopPropagation();
+                if(e.stopImmediatePropagation)e.stopImmediatePropagation();
+            }
+
+            if(playStarted)return;
 
             var f=findFile(
                 files,
@@ -1726,7 +1738,26 @@ function renderFiles(hash,torrent,files){
                 );
             }
 
-            playFile(f, torrent);
+            if(Number(f.progress)<0.999999||!isVideo(f.name)){
+                playFile(f, torrent);
+                return;
+            }
+
+            /* Сначала закрываем модальное окно, затем запускаем плеер. */
+            playStarted = true;
+            this.disabled = true;
+            modalHash = '';
+            modalReq++;
+
+            try{
+                Lampa.Modal.close();
+            }catch(closeError){
+                log('Не удалось закрыть окно списка перед запуском:',closeError);
+            }
+
+            setTimeout(function(){
+                playFile(f, torrent);
+            },120);
         })
         .end()
         .find('.qbit-files__refresh')
