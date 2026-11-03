@@ -2197,13 +2197,7 @@ function registerSettings(){
                 'Останавливать все раздачи qBittorrent',
                 'Да — все завершённые раздачи. Нет — только торренты, добавленные через Lampa'
             ],
-			[
-    DEBUG_KEY,
-    'trigger',
-    true,
-    'Режим отладки (DEBUG)',
-    'Да — включить отладочные сообщения. Нет — отключить'
-],
+			
             [
                 'qbit_savepath',
                 'input',
@@ -2211,6 +2205,12 @@ function registerSettings(){
                 'Путь загрузки qBittorrent',
                 'Пример: '+EXAMPLE_SAVEPATH
             ],
+						[
+    'qbit_create_folder', 'trigger', false,
+    'Создавать папку для торрента',
+    'Да — отдельная папка с названием торрента. ' +
+    'Нет — загрузка прямо в корень SMB'
+],
             [
                 'qbit_smb_file',
                 'input',
@@ -2218,17 +2218,11 @@ function registerSettings(){
                 'Адрес SMB-папки',
                 'Пример: '+EXAMPLE_SMB
             ],
-			[
-    'qbit_create_folder', 'trigger', false,
-    'Создавать папку для торрента',
-    'Да — отдельная папка с названием торрента. ' +
-    'Нет — загрузка прямо в корень SMB'
-],
             [
                 'qbit_smb_anonymous',
                 'trigger',
                 false,
-                'Аноним SMB',
+                'Анонимная аутентификация SMB сервера',
                 'Да — подключаться без логина и пароля'
             ],
             [
@@ -2244,7 +2238,14 @@ function registerSettings(){
                 '',
                 'Пароль SMB сервера',
                 'Пароль пользователя SMB'
-            ]
+            ],
+			[
+    DEBUG_KEY,
+    'trigger',
+    true,
+    'Режим отладки (DEBUG)',
+    'Да — включить отладочные сообщения. Нет — отключить. Логи смотреть в самой Lampa.'
+]
 
         ].forEach(function(it){
             Lampa.SettingsApi.addParam({
