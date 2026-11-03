@@ -674,22 +674,56 @@ function addBody(magnet, title) {
         'sequentialDownload=false'
     ];
 
-    /*
-     * Если включено создание отдельной папки торрента,
-     * заменяем пробелы в её названии на подчёркивания.
-     * Например: "Мой любимый фильм" -> "Мой_любимый_фильм".
-     */
-    if (title) {
-        var folderTitle = String(title).trim();
-
-        if (c.createFolder) {
-            folderTitle = folderTitle.replace(/\s+/g, '_');
-        }
-
-        p.push('rename=' + encodeURIComponent(folderTitle));
-    }
+    if (title) p.push('rename=' + encodeURIComponent(title));
 
     return p.join('&');
+}
+
+/*
+ * qBittorrent создаёт Subfolder по имени торрента из метаданных.
+ * Поэтому одного параметра rename при добавлении недостаточно:
+ * после появления торрента переименовываем само имя через Web API.
+ */
+function safeTorrentFolderName(name){
+    return String(name||'').replace(/\s+/g,'_').trim();
+}
+
+function renameTorrentFolder(hash,torrent,cb){
+    cb=typeof cb==='function'?cb:function(t){return t;};
+
+    var c=cfg();
+    var original=String(torrent&&torrent.name||'');
+
+    if(!c.createFolder||!original||!/\s/.test(original))
+        return cb(torrent);
+
+    var safeName=safeTorrentFolderName(original);
+
+    if(!safeName||safeName===original)
+        return cb(torrent);
+
+    log('Переименование папки торрента:',original,'→',safeName);
+
+    qbPost(
+        '/api/v2/torrents/rename',
+        'hash='+encodeURIComponent(hash)+'&name='+encodeURIComponent(safeName),
+        function(resp){
+            if(resp==null||/Forbidden|403|Errored|Fails/i.test(String(resp))){
+                log('Не удалось переименовать папку торрента:',resp);
+                return cb(torrent);
+            }
+
+            torrentInfo(hash,function(updated){
+                if(updated){
+                    log('Имя торрента после переименования:',updated.name);
+                    cb(updated);
+                }else{
+                    torrent.name=safeName;
+                    cb(torrent);
+                }
+            });
+        }
+    );
 }
 
 function torrentInfo(hash,cb){
@@ -809,11 +843,13 @@ function qbAdd(magnet,title,cb){
         if(existing){
             log('Торрент уже существует:',existing.name,key);
 
-            return finish(
-                true,
-                existing,
-                'Торрент уже есть в qBittorrent. Подключено отслеживание.'
-            );
+            return renameTorrentFolder(key,existing,function(updated){
+                finish(
+                    true,
+                    updated||existing,
+                    'Торрент уже есть в qBittorrent. Подключено отслеживание.'
+                );
+            });
         }
 
         debugNotify('Отправляю в qBittorrent...');
@@ -850,11 +886,13 @@ function qbAdd(magnet,title,cb){
                         found.state
                     );
 
-                    finish(
-                        true,
-                        found,
-                        'Торрент успешно найден в qBittorrent'
-                    );
+                    renameTorrentFolder(key,found,function(updated){
+                        finish(
+                            true,
+                            updated||found,
+                            'Торрент успешно найден в qBittorrent'
+                        );
+                    });
                 });
             }
         );
@@ -1960,7 +1998,6 @@ function startPoll(btn,hash,item,icon){
                     stopPoll(btn);
                     return setProgress(btn,null,icon);
                 }
-
                 if(p>=1){
                     stopPoll(btn);
                     setProgress(btn,1,icon);
