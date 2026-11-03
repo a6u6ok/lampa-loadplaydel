@@ -51,6 +51,18 @@ var SVG_PLAY='<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7
 
 var SVG_DEL='<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
 
+function notify(msg){
+    msg=String(msg===undefined||msg===null?'':msg);
+    try{
+        if(window.Lampa&&Lampa.Noty&&typeof Lampa.Noty.show==='function')
+            return Lampa.Noty.show(msg);
+    }catch(e){
+        try{console.error('[qBittorrent] Ошибка уведомления:',e);}catch(ignore){}
+    }
+    try{console.log('[qBittorrent]',msg);}catch(e){}
+    return false;
+}
+
 function debugEnabled(){
     return isTrue(storeGet(DEBUG_KEY, true), true);
 }
@@ -1986,7 +1998,6 @@ function openWizard(){
         '<div class="qbit-wizard__desc">'+
             'Укажите параметры qBittorrent. Настройки сохраняются в Lampa.'+
         '</div>'+
-
         field(
             'qbit-wz-url',
             'Адрес сервера qBittorrent',
