@@ -1813,8 +1813,8 @@ function openFiles(hash){
 
     var req=++modalReq;
 
-    log('Открытие списка серий по кнопке Play. Хеш:',hash);
-    debugNotify('Получаю список серий...');
+    log('Открытие списка файлов по кнопке Play. Хеш:',hash);
+    debugNotify('Получаю список файлов...');
 
     torrentInfo(hash,function(t){
         if(req!==modalReq)return;
