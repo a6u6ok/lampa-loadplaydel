@@ -680,9 +680,9 @@ function addBody(magnet, title) {
 }
 
 /*
- * qBittorrent создаёт Subfolder по имени торрента из метаданных.
- * Поэтому одного параметра rename при добавлении недостаточно:
- * после появления торрента переименовываем само имя через Web API.
+ * Переименовывает именно физическую корневую папку торрента.
+ * /torrents/rename меняет только отображаемое имя раздачи,
+ * поэтому для каталога используем /torrents/renameFolder.
  */
 function safeTorrentFolderName(name){
     return String(name||'').replace(/\s+/g,'_').trim();
@@ -691,39 +691,61 @@ function safeTorrentFolderName(name){
 function renameTorrentFolder(hash,torrent,cb){
     cb=typeof cb==='function'?cb:function(t){return t;};
 
-    var c=cfg();
-    var original=String(torrent&&torrent.name||'');
-
-    if(!c.createFolder||!original||!/\s/.test(original))
+    if(!cfg().createFolder)
         return cb(torrent);
 
-    var safeName=safeTorrentFolderName(original);
-
-    if(!safeName||safeName===original)
-        return cb(torrent);
-
-    log('Переименование папки торрента:',original,'→',safeName);
-
-    qbPost(
-        '/api/v2/torrents/rename',
-        'hash='+encodeURIComponent(hash)+'&name='+encodeURIComponent(safeName),
-        function(resp){
-            if(resp==null||/Forbidden|403|Errored|Fails/i.test(String(resp))){
-                log('Не удалось переименовать папку торрента:',resp);
-                return cb(torrent);
-            }
-
-            torrentInfo(hash,function(updated){
-                if(updated){
-                    log('Имя торрента после переименования:',updated.name);
-                    cb(updated);
-                }else{
-                    torrent.name=safeName;
-                    cb(torrent);
-                }
-            });
+    torrentFiles(hash,0,function(files){
+        if(!Array.isArray(files)||!files.length){
+            log('Не удалось получить список файлов для переименования папки');
+            return cb(torrent);
         }
-    );
+
+        /*
+         * В torrents/files поле name содержит путь внутри торрента.
+         * При Subfolder корневая папка — первый сегмент этого пути.
+         */
+        var roots=[];
+        files.forEach(function(file){
+            var path=normalizeRelativePath(file&&file.name||'');
+            if(!path)return;
+            var slash=path.indexOf('/');
+            if(slash>0){
+                var root=path.substring(0,slash);
+                if(roots.indexOf(root)<0)roots.push(root);
+            }
+        });
+
+        if(roots.length!==1){
+            log('Не удалось однозначно определить корневую папку торрента:',roots);
+            return cb(torrent);
+        }
+
+        var oldName=roots[0];
+        var newName=safeTorrentFolderName(oldName);
+
+        if(!newName||newName===oldName||! /\s/.test(oldName))
+            return cb(torrent);
+
+        log('Переименование физической папки торрента:',oldName,'→',newName);
+
+        qbPost(
+            '/api/v2/torrents/renameFolder',
+            'hash='+encodeURIComponent(hash)+
+            '&oldPath='+encodeURIComponent(oldName)+
+            '&newPath='+encodeURIComponent(newName),
+            function(resp){
+                if(resp==null||/Forbidden|403|Errored|Fails|Conflict|404/i.test(String(resp))){
+                    log('qBittorrent не переименовал папку:',resp,'oldPath:',oldName,'newPath:',newName);
+                    return cb(torrent);
+                }
+
+                log('Физическая папка торрента переименована:',newName);
+                torrentInfo(hash,function(updated){
+                    cb(updated||torrent);
+                });
+            }
+        );
+    });
 }
 
 function torrentInfo(hash,cb){
@@ -1998,6 +2020,7 @@ function startPoll(btn,hash,item,icon){
                     stopPoll(btn);
                     return setProgress(btn,null,icon);
                 }
+
                 if(p>=1){
                     stopPoll(btn);
                     setProgress(btn,1,icon);
